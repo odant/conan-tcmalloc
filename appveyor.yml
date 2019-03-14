@@ -1,0 +1,42 @@
+skip_tags: true
+
+environment:
+  PYTHON: C:\\Python37-x64
+
+  CONAN_PRINT_RUN_COMMANDS: 1
+  CONAN_LOG_RUN_TO_OUTPUT: 1
+
+  CONAN_DISABLE_DLL_SIGN: 1
+
+  CONAN_REFERENCE: tcmalloc/2.7.2000.1001
+  CONAN_USERNAME: odant
+  CONAN_CHANNEL: testing
+  CONAN_STABLE_CHANNEL: stable
+
+  CONAN_VISUAL_RUNTIMES: MDd, MD
+
+  CONAN_UPLOAD: https://conan.kysa.me
+  CONAN_LOGIN_USERNAME: appveyor
+  CONAN_STABLE_BRANCH_PATTERN: release/*
+
+  matrix:
+    - APPVEYOR_BUILD_WORKER_IMAGE: Visual Studio 2017
+      CONAN_VISUAL_VERSIONS: 15
+      CONAN_ARCHS: x86_64
+
+    - APPVEYOR_BUILD_WORKER_IMAGE: Visual Studio 2017
+      CONAN_VISUAL_VERSIONS: 15
+      CONAN_ARCHS: x86
+
+install:
+  - set PATH=%PYTHON%;%PYTHON%\\Scripts\\;%PATH%
+  - pip install conan
+  - pip install conan_package_tools
+
+  - conan user
+
+build: false
+
+test_script:
+  - python build.py
+
