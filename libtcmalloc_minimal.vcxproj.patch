@@ -1,0 +1,96 @@
+diff --git a/src/vsprojects/libtcmalloc_minimal/libtcmalloc_minimal.vcxproj b/src/vsprojects/libtcmalloc_minimal/libtcmalloc_minimal.vcxproj
+index 1bd87bc..d1c67cc 100644
+--- a/src/vsprojects/libtcmalloc_minimal/libtcmalloc_minimal.vcxproj
++++ b/src/vsprojects/libtcmalloc_minimal/libtcmalloc_minimal.vcxproj
+@@ -99,21 +99,33 @@
+   </PropertyGroup>
+   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+     <IncludePath>..\..\src\windows;..\..\src;$(IncludePath)</IncludePath>
++    <TargetName>tcmallocd</TargetName>
++    <OutDir>$(SolutionDir)$(Platform)\$(Configuration)\</OutDir>
+   </PropertyGroup>
+   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+     <IncludePath>..\..\src\windows;..\..\src;$(IncludePath)</IncludePath>
++    <TargetName>tcmalloc64d</TargetName>
++    <OutDir>$(SolutionDir)$(Platform)\$(Configuration)\</OutDir>
+   </PropertyGroup>
+   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release-Patch|Win32'">
+     <IncludePath>..\..\src\windows;..\..\src;$(IncludePath)</IncludePath>
++    <TargetName>tcmalloc</TargetName>
++    <OutDir>$(SolutionDir)$(Platform)\$(Configuration)\</OutDir>
+   </PropertyGroup>
+   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release-Override|Win32'">
+     <IncludePath>..\..\src\windows;..\..\src;$(IncludePath)</IncludePath>
++    <TargetName>tcmalloc_static</TargetName>
++    <OutDir>$(SolutionDir)$(Platform)\$(Configuration)\</OutDir>
+   </PropertyGroup>
+   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release-Patch|x64'">
+     <IncludePath>..\..\src\windows;..\..\src;$(IncludePath)</IncludePath>
++    <TargetName>tcmalloc64</TargetName>
++    <OutDir>$(SolutionDir)$(Platform)\$(Configuration)\</OutDir>
+   </PropertyGroup>
+   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release-Override|x64'">
+     <IncludePath>..\..\src\windows;..\..\src;$(IncludePath)</IncludePath>
++    <TargetName>tcmalloc64_static</TargetName>
++    <OutDir>$(SolutionDir)$(Platform)\$(Configuration)\</OutDir>
+   </PropertyGroup>
+   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+     <ClCompile>
+@@ -123,6 +135,7 @@
+     </ClCompile>
+     <Link>
+       <SubSystem>Windows</SubSystem>
++      <MinimumRequiredVersion>6.2</MinimumRequiredVersion>
+     </Link>
+   </ItemDefinitionGroup>
+   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+@@ -133,6 +146,7 @@
+     </ClCompile>
+     <Link>
+       <SubSystem>Windows</SubSystem>
++      <MinimumRequiredVersion>6.2</MinimumRequiredVersion>
+     </Link>
+   </ItemDefinitionGroup>
+   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release-Patch|Win32'">
+@@ -145,6 +159,7 @@
+     </ClCompile>
+     <Link>
+       <SubSystem>Windows</SubSystem>
++      <MinimumRequiredVersion>6.2</MinimumRequiredVersion>
+       <OptimizeReferences>true</OptimizeReferences>
+       <EnableCOMDATFolding>true</EnableCOMDATFolding>
+     </Link>
+@@ -160,6 +175,7 @@
+     </ClCompile>
+     <Link>
+       <SubSystem>Windows</SubSystem>
++      <MinimumRequiredVersion>6.2</MinimumRequiredVersion>
+       <OptimizeReferences>true</OptimizeReferences>
+       <EnableCOMDATFolding>true</EnableCOMDATFolding>
+     </Link>
+@@ -174,6 +190,7 @@
+     </ClCompile>
+     <Link>
+       <SubSystem>Windows</SubSystem>
++      <MinimumRequiredVersion>6.2</MinimumRequiredVersion>
+       <OptimizeReferences>true</OptimizeReferences>
+       <EnableCOMDATFolding>true</EnableCOMDATFolding>
+     </Link>
+@@ -189,6 +206,7 @@
+     </ClCompile>
+     <Link>
+       <SubSystem>Windows</SubSystem>
++      <MinimumRequiredVersion>6.2</MinimumRequiredVersion>
+       <OptimizeReferences>true</OptimizeReferences>
+       <EnableCOMDATFolding>true</EnableCOMDATFolding>
+     </Link>
+@@ -291,6 +309,9 @@
+     <ClInclude Include="..\..\src\windows\port.h" />
+     <ClInclude Include="..\..\src\windows\preamble_patcher.h" />
+   </ItemGroup>
++  <ItemGroup>
++    <ResourceCompile Include="tcmalloc.rc" />
++  </ItemGroup>
+   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+   <ImportGroup Label="ExtensionTargets">
+   </ImportGroup>
