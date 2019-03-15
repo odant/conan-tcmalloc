@@ -4,6 +4,7 @@
 
 from conans import ConanFile, MSBuild, tools
 from conans.errors import ConanException
+from datetime import datetime
 import os, glob, shutil
 
 
@@ -13,12 +14,30 @@ def get_safe(options, name):
     except ConanException:
         return None
 
+def generateVersionH(version, current_time=datetime.now()):
+    content = ""
+    content += "#ifndef VERSIONNO__H\n"
+    content += "#define VERSIONNO__H\n"
+    content += "\n"
+    content += "#define VERSION_FULL           " + version + "\n"
+    content += "\n"
+    content += "#define VERSION_DATE           " + "\"" + current_time.strftime("%Y-%m-%d") + "\"\n"
+    content += "#define VERSION_TIME           " + "\"" + current_time.strftime("%H:%M:%S") + "\"\n"
+    content += "\n"
+    content += "#define VERSION_FILE           " + version.replace(".", ",") + "\n"
+    content += "#define VERSION_PRODUCT        " + version.replace(".", ",") + "\n"
+    content += "#define VERSION_FILESTR        " + "\"" + version + "\"\n"
+    content += "#define VERSION_PRODUCTSTR     " + "\"" + version.rsplit(".", 2)[0] + "\"\n"
+    content += "\n"
+    content += "#endif\n"
+    return content
+
 
 class TCMallocConan(ConanFile):
     name = "tcmalloc"
-    version = "2.7.2000.1001"
+    version = "2.7.19073.10242"
     license = "BSD 3-Clause"
-    description = "TCMalloc"
+    description = "Thread-Cached Malloc"
     url = "https://github.com/odant/conan-tcmalloc"
     settings = {
         "os": ["Windows"],
@@ -55,6 +74,8 @@ class TCMallocConan(ConanFile):
             self.msvc_build()
 
     def msvc_build(self):
+        version_h = generateVersionH(self.version)
+        tools.save(os.path.join(self.build_folder, "src", "vsprojects", "libtcmalloc_minimal", "version.h"), version_h)
         shutil.copy(os.path.join(self.source_folder, "tcmalloc.rc"), os.path.join(self.build_folder, "src", "vsprojects", "libtcmalloc_minimal"))
         with tools.chdir("src"):
             builder = MSBuild(self)
