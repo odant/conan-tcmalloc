@@ -64,7 +64,7 @@ class TCMallocConan(ConanFile):
 
     def build_requirements(self):
         if get_safe(self.options, "dll_sign"):
-            self.build_requires("windows_signtool/[~=1.0]@%s/stable" % self.user)
+            self.build_requires("windows_signtool/[~=1.1]@%s/stable" % self.user)
 
     def source(self):
         tools.patch(patch_file="libtcmalloc_minimal.vcxproj.patch")
