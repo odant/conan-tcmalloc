@@ -11,7 +11,7 @@ index 1bd87bc..d1c67cc 100644
    </PropertyGroup>
    <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
      <IncludePath>..\..\src\windows;..\..\src;$(IncludePath)</IncludePath>
-+    <TargetName>tcmalloc64d</TargetName>
++    <TargetName>tcmallocd</TargetName>
 +    <OutDir>$(SolutionDir)$(Platform)\$(Configuration)\</OutDir>
    </PropertyGroup>
    <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release-Patch|Win32'">
@@ -26,12 +26,12 @@ index 1bd87bc..d1c67cc 100644
    </PropertyGroup>
    <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release-Patch|x64'">
      <IncludePath>..\..\src\windows;..\..\src;$(IncludePath)</IncludePath>
-+    <TargetName>tcmalloc64</TargetName>
++    <TargetName>tcmalloc</TargetName>
 +    <OutDir>$(SolutionDir)$(Platform)\$(Configuration)\</OutDir>
    </PropertyGroup>
    <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release-Override|x64'">
      <IncludePath>..\..\src\windows;..\..\src;$(IncludePath)</IncludePath>
-+    <TargetName>tcmalloc64_static</TargetName>
++    <TargetName>tcmalloc_static</TargetName>
 +    <OutDir>$(SolutionDir)$(Platform)\$(Configuration)\</OutDir>
    </PropertyGroup>
    <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">

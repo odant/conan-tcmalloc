@@ -86,18 +86,14 @@ class TCMallocConan(ConanFile):
             builder.build("gperftools.sln", upgrade_project=False, verbosity="normal", use_env=False, build_type=build_type, targets=["libtcmalloc_minimal"])
 
     def package(self):
-        self.copy("tcmalloc64.lib", dst="lib", src="src/x64/Release-Patch", keep_path=False)
-        self.copy("tcmalloc64.dll", dst="bin", src="src/x64/Release-Patch", keep_path=False)
-        self.copy("tcmalloc64.pdb", dst="bin", src="src/x64/Release-Patch", keep_path=False)
-        self.copy("tcmalloc64d.lib", dst="lib", src="src/x64/Debug", keep_path=False)
-        self.copy("tcmalloc64d.dll", dst="bin", src="src/x64/Debug", keep_path=False)
-        self.copy("tcmalloc64d.pdb", dst="bin", src="src/x64/Debug", keep_path=False)
-        self.copy("tcmalloc.lib", dst="lib", src="src/Win32/Release-Patch", keep_path=False)
-        self.copy("tcmalloc.dll", dst="bin", src="src/Win32/Release-Patch", keep_path=False)
-        self.copy("tcmalloc.pdb", dst="bin", src="src/Win32/Release-Patch", keep_path=False)
-        self.copy("tcmallocd.lib", dst="lib", src="src/Win32/Debug", keep_path=False)
-        self.copy("tcmallocd.dll", dst="bin", src="src/Win32/Debug", keep_path=False)
-        self.copy("tcmallocd.pdb", dst="bin", src="src/Win32/Debug", keep_path=False)
+        for releasePath in [ "src/x64/Release-Patch", "src/Win32/Release-Patch" ]:
+            self.copy("tcmalloc.lib", dst="lib", src=releasePath, keep_path=False)
+            self.copy("tcmalloc.dll", dst="bin", src=releasePath, keep_path=False)
+            self.copy("tcmalloc.pdb", dst="bin", src=releasePath, keep_path=False)
+        for debugPath in [ "src/x64/Debug", "src/Win32/Debug" ]:
+            self.copy("tcmallocd.lib", dst="lib", src=debugPath, keep_path=False)
+            self.copy("tcmallocd.dll", dst="bin", src=debugPath, keep_path=False)
+            self.copy("tcmallocd.pdb", dst="bin", src=debugPath, keep_path=False)
         # Sign DLL
         if get_safe(self.options, "dll_sign"):
             import windows_signtool
