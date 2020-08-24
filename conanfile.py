@@ -35,7 +35,7 @@ def generateVersionH(version, current_time=datetime.now()):
 
 class TCMallocConan(ConanFile):
     name = "tcmalloc"
-    version = "2.7.19330.18362"
+    version = "2.8.20236.14000"
     license = "BSD 3-Clause"
     description = "Thread-Cached Malloc"
     url = "https://github.com/odant/conan-tcmalloc"
@@ -52,8 +52,6 @@ class TCMallocConan(ConanFile):
     exports_sources = "src/*", "libtcmalloc_minimal.vcxproj.patch", "tcmalloc.rc"
     no_copy_source = False
     build_policy = "missing"
-    #
-    commit = "9e5b1628737c67b4587f937164572774592978c4"
 
     def configure(self):
         # DLL sign
