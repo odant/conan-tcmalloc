@@ -18,12 +18,8 @@
 /* used by tcmalloc.h */
 #define GPERFTOOLS_CONFIG_H_
 
-/* define this if you are linking tcmalloc statically and overriding the
- * default allocators.
- * For instructions on how to use this mode, see
- * http://groups.google.com/group/google-perftools/browse_thread/thread/41cd3710af85e57b
- */
-/* #undef WIN32_OVERRIDE_ALLOCATORS */
+/* Enable aggressive decommit by default */
+/* #undef ENABLE_AGGRESSIVE_DECOMMIT_BY_DEFAULT */
 
 /* Build new/delete operators for overaligned types */
 /* #undef ENABLE_ALIGNED_NEW_DELETE */
@@ -31,11 +27,14 @@
 /* Build runtime detection for sized delete */
 /* #undef ENABLE_DYNAMIC_SIZED_DELETE */
 
+/* Report large allocation */
+/* #undef ENABLE_LARGE_ALLOC_REPORT */
+
 /* Build sized deletion operators */
 /* #undef ENABLE_SIZED_DELETE */
 
-/* Define to 1 if compiler supports __builtin_expect */
-/* #undef HAVE_BUILTIN_EXPECT */
+/* Define to 1 if you have the <asm/ptrace.h> header file. */
+/* #undef HAVE_ASM_PTRACE_H */
 
 /* Define to 1 if compiler supports __builtin_stack_pointer */
 /* #undef HAVE_BUILTIN_STACK_POINTER */
@@ -102,9 +101,6 @@
 
 /* Define to 1 if you have the `geteuid' function. */
 /* #undef HAVE_GETEUID */
-
-/* Define to 1 if you have the `getpagesize' function. */
-#define HAVE_GETPAGESIZE 1   /* we define it in windows/port.cc */
 
 /* Define to 1 if you have the <glob.h> header file. */
 /* #undef HAVE_GLOB_H */
@@ -180,9 +176,6 @@
 /* Define to 1 if you have the <sys/cdefs.h> header file. */
 /* #undef HAVE_SYS_CDEFS_H */
 
-/* Define to 1 if you have the <sys/param.h> header file. */
-/* #undef HAVE_SYS_PARAM_H */
-
 /* Define to 1 if you have the <sys/prctl.h> header file. */
 /* #undef HAVE_SYS_PRCTL_H */
 
@@ -237,6 +230,9 @@
 /* Define to 1 if the system has the type `__int64'. */
 #define HAVE___INT64 1
 
+/* Define to 1 if you have the `__sbrk' function. */
+/* #undef HAVE___SBRK */
+
 /* prefix where we look for installed files */
 /* #undef INSTALL_PREFIX */
 
@@ -258,7 +254,7 @@
 #define PACKAGE_NAME "gperftools"
 
 /* Define to the full name and version of this package. */
-#define PACKAGE_STRING "gperftools 2.7"
+#define PACKAGE_STRING "gperftools 2.8"
 
 /* Define to the one symbol short name of this package. */
 #define PACKAGE_TARNAME "gperftools"
@@ -267,7 +263,7 @@
 #define PACKAGE_URL ""
 
 /* Define to the version of this package. */
-#define PACKAGE_VERSION "2.7"
+#define PACKAGE_VERSION "2.8"
 
 /* How to access the PC from a struct ucontext */
 /* #undef PC_FROM_UCONTEXT */
@@ -320,14 +316,11 @@
 /* the namespace where STL code like vector<> is defined */
 #define STL_NAMESPACE std
 
-/* Define 32K of internal pages size for tcmalloc */
-/* #undef TCMALLOC_32K_PAGES */
-
-/* Define 64K of internal pages size for tcmalloc */
-/* #undef TCMALLOC_64K_PAGES */
-
 /* Define 8 bytes of allocation alignment for tcmalloc */
 /* #undef TCMALLOC_ALIGN_8BYTES */
+
+/* Define internal page size for tcmalloc as number of left bitshift */
+/* #undef TCMALLOC_PAGE_SIZE_SHIFT */
 
 /* Version number of package */
 #define VERSION "2.7"

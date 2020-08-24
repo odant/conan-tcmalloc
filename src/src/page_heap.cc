@@ -221,12 +221,10 @@ Span* PageHeap::Split(Span* span, Length n) {
   ASSERT(n < span->length);
   ASSERT(span->location == Span::IN_USE);
   ASSERT(span->sizeclass == 0);
-  Event(span, 'T', n);
 
   const int extra = span->length - n;
   Span* leftover = NewSpan(span->start + n, extra);
   ASSERT(leftover->location == Span::IN_USE);
-  Event(leftover, 'U', extra);
   RecordSpan(leftover);
   pagemap_.set(span->start + n - 1, span); // Update map from pageid to span
   span->length = n;
@@ -243,12 +241,22 @@ void PageHeap::CommitSpan(Span* span) {
   stats_.total_commit_bytes += (span->length << kPageShift);
 }
 
-bool PageHeap::DecommitSpan(Span* span) {
+bool PageHeap::TryDecommitWithoutLock(Span* span) {
   ++stats_.decommit_count;
+  ASSERT(span->location == Span::ON_NORMAL_FREELIST);
+  span->location = Span::IN_USE;
 
+  Static::pageheap_lock()->Unlock();
   bool rv = TCMalloc_SystemRelease(reinterpret_cast<void*>(span->start << kPageShift),
                                    static_cast<size_t>(span->length << kPageShift));
+  Static::pageheap_lock()->Lock();
+
+  // We're not really on any free list at this point, but lets
+  // indicate if we're returned or not.
+  span->location = Span::ON_NORMAL_FREELIST;
+
   if (rv) {
+    span->location = Span::ON_RETURNED_FREELIST;
     stats_.committed_bytes -= span->length << kPageShift;
     stats_.total_decommit_bytes += (span->length << kPageShift);
   }
@@ -262,14 +270,12 @@ Span* PageHeap::Carve(Span* span, Length n) {
   const int old_location = span->location;
   RemoveFromFreeList(span);
   span->location = Span::IN_USE;
-  Event(span, 'A', n);
 
   const int extra = span->length - n;
   ASSERT(extra >= 0);
   if (extra > 0) {
     Span* leftover = NewSpan(span->start + n, extra);
     leftover->location = old_location;
-    Event(leftover, 'S', extra);
     RecordSpan(leftover);
 
     // The previous span of |leftover| was just splitted -- no need to
@@ -309,7 +315,6 @@ void PageHeap::Delete(Span* span) {
   span->sizeclass = 0;
   span->sample = 0;
   span->location = Span::ON_NORMAL_FREELIST;
-  Event(span, 'D', span->length);
   MergeIntoFreeList(span);  // Coalesces if possible
   IncrementalScavenge(n);
   ASSERT(stats_.unmapped_bytes+ stats_.committed_bytes==stats_.system_bytes);
@@ -325,15 +330,19 @@ Span* PageHeap::CheckAndHandlePreMerge(Span* span, Span* other) {
   if (other == NULL) {
     return other;
   }
-  // if we're in aggressive decommit mode and span is decommitted,
-  // then we try to decommit adjacent span.
+
+  // If we're in aggressive decommit mode and span is decommitted,
+  // then we try to decommit adjacent span. We also remove from it's
+  // free list as part of that.
   if (aggressive_decommit_ && other->location == Span::ON_NORMAL_FREELIST
       && span->location == Span::ON_RETURNED_FREELIST) {
-    bool worked = DecommitSpan(other);
-    if (!worked) {
-      return NULL;
+    if (ReleaseSpan(other) != 0) {
+      return other;
     }
-  } else if (other->location != span->location) {
+    return NULL;
+  }
+
+  if (other->location != span->location) {
     return NULL;
   }
 
@@ -365,7 +374,7 @@ void PageHeap::MergeIntoFreeList(Span* span) {
   const Length n = span->length;
 
   if (aggressive_decommit_ && span->location == Span::ON_NORMAL_FREELIST) {
-    if (DecommitSpan(span)) {
+    if (TryDecommitWithoutLock(span)) {
       span->location = Span::ON_RETURNED_FREELIST;
     }
   }
@@ -379,7 +388,6 @@ void PageHeap::MergeIntoFreeList(Span* span) {
     span->start -= len;
     span->length += len;
     pagemap_.set(span->start, span);
-    Event(span, 'L', len);
   }
   Span* next = CheckAndHandlePreMerge(span, GetDescriptor(p+n));
   if (next != NULL) {
@@ -389,7 +397,6 @@ void PageHeap::MergeIntoFreeList(Span* span) {
     DeleteSpan(next);
     span->length += len;
     pagemap_.set(span->start + span->length - 1, span);
-    Event(span, 'R', len);
   }
 
   PrependToFreeList(span);
@@ -474,18 +481,35 @@ void PageHeap::IncrementalScavenge(Length n) {
   }
 }
 
-Length PageHeap::ReleaseSpan(Span* s) {
-  ASSERT(s->location == Span::ON_NORMAL_FREELIST);
+Length PageHeap::ReleaseSpan(Span* span) {
+  // We're dropping very important and otherwise contended
+  // pageheap_lock around call to potentially very slow syscall to
+  // release pages. Those syscalls can be slow even with "advanced"
+  // things such as MADV_FREE and its better equivalents, because they
+  // have to walk actual page tables, and we sometimes deal with large
+  // spans, which sometimes takes lots of time to walk. Plus Linux
+  // grabs per-address space mmap_sem lock which could be extremely
+  // contended at times. So it is best if we avoid holding one
+  // contended lock while waiting for another.
+  //
+  // Note, we set span location to in-use, because our span could be found via
+  // pagemap in e.g. MergeIntoFreeList while we're not holding the lock. By
+  // marking it in-use we prevent this possibility. So span is removed from free
+  // list and marked "unmergable" and that guarantees safety during unlock-ful
+  // release.
+  ASSERT(span->location == Span::ON_NORMAL_FREELIST);
+  RemoveFromFreeList(span);
 
-  if (DecommitSpan(s)) {
-    RemoveFromFreeList(s);
-    const Length n = s->length;
-    s->location = Span::ON_RETURNED_FREELIST;
-    MergeIntoFreeList(s);  // Coalesces if possible.
-    return n;
+  Length n = span->length;
+  if (TryDecommitWithoutLock(span)) {
+    span->location = Span::ON_RETURNED_FREELIST;
+  } else {
+    n = 0; // Mark that we failed to return.
+    span->location = Span::ON_NORMAL_FREELIST;
   }
 
-  return 0;
+  MergeIntoFreeList(span);  // Coalesces if possible.
+  return n;
 }
 
 Length PageHeap::ReleaseAtLeastNPages(Length num_pages) {
@@ -554,7 +578,6 @@ void PageHeap::RegisterSizeClass(Span* span, uint32 sc) {
   ASSERT(span->location == Span::IN_USE);
   ASSERT(GetDescriptor(span->start) == span);
   ASSERT(GetDescriptor(span->start+span->length-1) == span);
-  Event(span, 'C', sc);
   span->sizeclass = sc;
   for (Length i = 1; i < span->length-1; i++) {
     pagemap_.set(span->start+i, span);
