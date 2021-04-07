@@ -5,14 +5,14 @@ cmake_minimum_required(VERSION 3.12)
 
 # Based on configure.ac
 
-project(gperftools VERSION 2.8.1 LANGUAGES C CXX
+project(gperftools VERSION 2.9.0 LANGUAGES C CXX
         DESCRIPTION "Performance tools for C++"
         HOMEPAGE_URL http://code.google.com/p/gperftools/)
 
 # Update this value for every release!
-set(TCMALLOC_SO_VERSION 9.6.5)
-set(PROFILER_SO_VERSION 5.1.5)
-set(TCMALLOC_AND_PROFILER_SO_VERSION 10.1.6)
+set(TCMALLOC_SO_VERSION 9.9.5)
+set(PROFILER_SO_VERSION 5.4.5)
+set(TCMALLOC_AND_PROFILER_SO_VERSION 10.4.6)
 
 # The user can choose not to compile in the heap-profiler, the
 # heap-checker, or the cpu-profiler.  There's also the possibility
@@ -58,7 +58,6 @@ include(CPack)
 include(GNUInstallDirs)
 
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
-include(CheckNoFPByDefault)
 include(DefineTargetVariables)
 include(FindObjcopyWithWeaken)
 include(PCFromUContext)
@@ -66,7 +65,7 @@ include(PCFromUContext)
 define_target_variables()
 
 # Currently only backtrace works on s390.
-if(s390)
+if(s390 OR OSX)
   set(default_enable_libunwind OFF)
   set(default_enable_backtrace ON)
 else()
@@ -160,19 +159,6 @@ set(CMAKE_CXX_EXTENSIONS ON)
 # Check if we have an objcopy installed that supports -W
 find_objcopy_with_weaken()
 
-# AC_C_INLINE
-set(inline)
-foreach(inline_keyword "inline" "__inline" "__inline__")
-  check_c_source_compiles("
-      static ${inline_keyword} void foo() {}
-      int main() { foo(); return 0; }"
-      have_${inline_keyword})
-  if(have_${inline_keyword})
-      set(inline ${inline_keyword})
-      break()
-  endif()
-endforeach()
-
 # AX_C___ATTRIBUTE__
 check_c_source_compiles("#include <stdlib.h>
                          static void foo(void) __attribute__ ((unused));
@@ -180,7 +166,6 @@ check_c_source_compiles("#include <stdlib.h>
                          int main() { return 0; }"
         HAVE___ATTRIBUTE__)
 
-check_type_size("__int64" __INT64 LANGUAGE CXX) # defined in some windows platforms
 set(CMAKE_EXTRA_INCLUDE_FILES "malloc.h")
 check_type_size("struct mallinfo" STRUCT_MALLINFO LANGUAGE CXX)
 set(CMAKE_EXTRA_INCLUDE_FILES "elf.h")
@@ -196,7 +181,6 @@ check_include_file("glob.h" HAVE_GLOB_H) # for heap-profile-table (cleaning up p
 check_include_file("execinfo.h" HAVE_EXECINFO_H) # for stacktrace? and heapchecker_unittest
 check_include_file("unwind.h" HAVE_UNWIND_H) # for stacktrace
 check_include_file("sched.h" HAVE_SCHED_H) # for being nice in our spinlock code
-check_include_file("conflict-signal.h" HAVE_CONFLICT_SIGNAL_H) # defined on some windows platforms?
 check_include_file("sys/prctl.h" HAVE_SYS_PRCTL_H) # for thread_lister (needed by leak-checker)
 check_include_file("linux/ptrace.h" HAVE_LINUX_PTRACE_H) # also needed by leak-checker
 check_include_file("sys/syscall.h" HAVE_SYS_SYSCALL_H)
@@ -207,16 +191,12 @@ check_include_file("fcntl.h" HAVE_FCNTL_H) # for tcmalloc_unittest
 check_include_file("grp.h" HAVE_GRP_H) # for heapchecker_unittest
 check_include_file("pwd.h" HAVE_PWD_H) # for heapchecker_unittest
 check_include_file("sys/resource.h" HAVE_SYS_RESOURCE_H) # for memalign_unittest.cc
-check_include_file("valgrind.h" HAVE_VALGRIND_H) # we have a local copy if this isn't found
 check_include_file("sys/cdefs.h" HAVE_SYS_CDEFS_H) # Where glibc defines __THROW
 
 check_include_file("unistd.h" HAVE_UNISTD_H)
 check_include_file("inttypes.h" HAVE_INTTYPES_H)
 # We also need <ucontext.h>/<sys/ucontext.h>, but we get those from
 # AC_PC_FROM_UCONTEXT, below.
-
-# for windows
-check_symbol_exists(snprintf stdio.h HAVE_SNPRINTF)
 
 # We override a lot of memory allocation routines, not all of which are
 # standard.  For those the system doesn't declare, we'll declare ourselves.
@@ -282,33 +262,10 @@ if(gperftools_enable_libunwind)
   endif()
 endif()
 
-# On x86_64, instead of libunwind, we can choose to compile with frame-pointers.
-# Some x86_64 systems do not insert frame pointers by default.
-# We want to see if the current system is one of those.
+# On x86_64, we know that default is to omit frame pointer.
 if(x86_64)
-  check_omit_fp_by_default(omit_fp_by_default)
+  set(omit_fp_by_default ON)
 endif()
-
-if(x86_64 AND omit_fp_by_default)
-  set(fp_option_enabled "Success")
-else()
-  set(fp_option_enabled "Failed")
-  if(NOT x86_64)
-    set(fp_option_enabled "${fp_option_enabled}, not x86_64")
-  elseif(NOT omit_fp_by_default)
-    set(fp_option_enabled
-        "${fp_option_enabled}, frame pointer not omitted by default")
-  endif()
-  message(STATUS
-    "Enable option gperftools_enable_frame_pointers - ${fp_option_enabled}")
-endif()
-
-cmake_dependent_option(
-  gperftools_enable_frame_pointers
-  "On x86_64 systems, compile with -fno-omit-frame-pointer (see INSTALL)"
-  OFF
-  "x86_64;omit_fp_by_default"
-  OFF)
 
 # See if the compiler supports -Wno-unused-result.
 # Newer ubuntu's turn on -D_FORTIFY_SOURCE=2, enabling
@@ -347,14 +304,13 @@ else()
   set(HAVE_STD_ALIGN_VAL_T 0)
 endif()
 
-check_c_source_compiles(
-  "namespace abc { void foo() {} } int main() { abc::foo(); return 0; }"
-  HAVE_NAMESPACES)
-
 check_c_source_compiles("
   #include <unwind.h>
   int main()
   {
+#if __APPLE__
+#error OSX _Unwind_Backtrace recurses back to malloc
+#endif
     &_Unwind_Backtrace;
     return 0;
   }"
@@ -374,9 +330,6 @@ option(gperftools_emergency_malloc
        "Build emergency malloc"
        ${default_emergency_malloc})
 
-check_c_source_compiles(
-  "int main() { void* sp = __builtin_stack_pointer(); return 0; }"
-  HAVE_BUILTIN_STACK_POINTER)
 check_c_source_compiles(
   "int main() { return __builtin_expect(main != 0, 1); }"
   HAVE_BUILTIN_EXPECT)
@@ -410,7 +363,7 @@ elseif(APPLE)
 elseif(MINGW)
   message(WARNING "mingw doesn't really support tls")
 else()
-  check_c_source_compiles("static __thread int p = 0;" HAVE_TLS)
+  check_c_source_compiles("static __thread int p = 0; int main() {}" HAVE_TLS)
 endif()
 
 if(NEED_NANOSLEEP)
@@ -476,30 +429,11 @@ if(EXISTS /usr/sfw/lib/libstdc++.la)
   endif()
 endif()
 
-# We also need to check if the kernel supports __thread, which requires uname()
-check_symbol_exists("uname" "sys/utsname.h" HAVE_DECL_UNAME)
-
 check_cxx_source_compiles(
   "#include <string>
      #include <vector>
      int main() { pthread_t th; pthread_join(th, 0); return 0; }"
   have_pthread_despite_asking_for)
-
-check_cxx_source_compiles(
-  "#include <vector>
-     int main() { vector<int> t; return 0; }"
-  STL_NAMESPACE_NONE)
-if(STL_NAMESPACE_NONE)
-  set(STL_NAMESPACE "")
-else()
-  check_cxx_source_compiles(
-    "#include <vector>
-         int main() { std::vector<int> t; return 0; }"
-    STL_NAMESPACE_STD)
-  if (STL_NAMESPACE_STD)
-    set(STL_NAMESPACE "std")
-  endif()
-endif()
 
 check_variable_exists("program_invocation_name" HAVE_PROGRAM_INVOCATION_NAME)
 
@@ -527,21 +461,23 @@ if(GPERFTOOLS_BUILD_CPU_PROFILER OR
   set(WITH_STACK_TRACE ON)
 endif()
 
-if(gperftools_enable_frame_pointers AND
-   NOT unwind_libs AND
-   NOT gperftools_build_minimal)
+# The following matters only if we're not using libunwind and if we
+# care about backtrace capturing, and frame pointers are not available
+# to capture backtraces. The idea is to warn user about less stable or
+# known bad configurations (e.g. encourage to install libunwind).
+if (NOT unwind_libs AND NOT gperftools_build_minimal AND
+    omit_fp_by_default AND NOT gperftools_enable_frame_pointers)
   if(HAVE_UNWIND_BACKTRACE)
     message(WARNING "No frame pointers and no libunwind. "
                     "Using experimental backtrace capturing via libgcc. "
                     "Expect crashy cpu profiler.")
-    if(gperftools_enable_stacktrace_via_backtrace)
-      message(WARNING "No frame pointers and no libunwind. "
-                      "Using experimental backtrace(). "
-                      "Expect crashy cpu profiler.")
-    else()
-      message(FATAL_ERROR "No frame pointers and no libunwind. "
-                          "The compilation will fail.")
-    endif()
+  elseif(gperftools_enable_stacktrace_via_backtrace)
+    message(WARNING "No frame pointers and no libunwind. "
+      "Using experimental backtrace(). "
+      "Expect crashy cpu profiler.")
+  else()
+    message(FATAL_ERROR "No frame pointers and no libunwind. "
+      "The compilation will fail.")
   endif()
 endif()
 
@@ -585,16 +521,17 @@ endif()
 # LIBSTDCXX_LA_LINKER_FLAG is used to fix a Solaris bug.
 add_link_options(${libstdcxx_la_linker_flag})
 
-# These are x86-specific, having to do with frame-pointers.  In
-# particular, some x86_64 systems do not insert frame pointers by
-# default (all i386 systems that I know of, do.  I don't know about
-# non-x86 chips).  We need to tell perftools what to do about that.
-if(x86_64 AND x86_no_fp_by_default)
-  if(gperftools_enable_frame_pointers)
-    add_compile_options(-fno-omit-frame-pointer)
-  elseif(CMAKE_CXX_FLAGS MATCHES "-fomit-frame-pointer")
-    add_compile_definitions(NO_FRAME_POINTER)
-  endif()
+option(
+  gperftools_enable_frame_pointers
+  "Compile with -fno-omit-frame-pointer (see INSTALL)"
+  OFF)
+
+if(gperftools_enable_frame_pointers)
+  add_compile_options(-fno-omit-frame-pointer)
+endif()
+
+if(omit_fp_by_default AND NOT gperftools_enable_frame_pointers)
+  add_compile_definitions(NO_FRAME_POINTER)
 endif()
 
 # For windows systems (at least, mingw), we need to tell all our
@@ -627,8 +564,7 @@ set(LOGGING_INCLUDES
         src/base/logging.h
         src/base/commandlineflags.h
         src/base/basictypes.h
-        src/base/dynamic_annotations.h
-        src/third_party/valgrind.h)
+        src/base/dynamic_annotations.h)
 set(liblogging_la_SOURCES src/base/logging.cc
         src/base/dynamic_annotations.c
         ${LOGGING_INCLUDES})

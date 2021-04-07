@@ -1,3 +1,55 @@
+== 2 March 2021 ==
+gperftools 2.9.1 is out!
+
+Minor fixes landed since previous release:
+
+* OSX builds new prefer backtrace() and have somewhat working heap
+  sampling.
+
+* Incorrect assertion failure was fixed that crashed tcmalloc if
+  assertions were on and sized delete was used. More details in github
+  issue #1254.
+
+== 21 February 2021 ==
+gperftools 2.9 is out!
+
+Few more changes landed compared to rc:
+
+* Venkatesh Srinivas has contributed thread-safety annotations
+  support.
+
+* couple more unit test bugs that caused tcmalloc_unittest to fail on
+  recent clang has been fixed.
+
+* usage of unsupportable linux_syscall_support.h has been removed from
+  few places. Building with --disable-heap-checker now completely
+  avoids it. Expect complete death of this header in next major
+  release.
+
+== 14 February 2021 ==
+gperftools 2.9rc is out!
+
+Here are notable changes:
+
+* Jarno Rajahalme has contributed fix for crashing bug in syscalls
+  support for aarch64.
+
+* User SSE4 has contributed basic support for Elbrus 2000 architecture
+  (!)
+
+* Venkatesh Srinivas has contributed cleanup to atomic ops.
+
+* Đoàn Trần Công Danh has fixed cpu profiler compilation on musl.
+
+* there is now better backtracing support for aarch64 and
+  riscv. x86-64 with frame pointers now also defaults to this new
+  "generic" frame pointer backtracer.
+
+* emergency malloc is now enabled by default. Fixes hang on musl when
+  libgcc backtracer is enabled.
+
+* bunch of legacy config tests has been removed
+
 == 20 December 2020 ==
 gperftools 2.8.1 is out!
 
