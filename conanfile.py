@@ -2,7 +2,7 @@
 # Dmitriy Vetutnev, ODANT 2018
 
 
-from conans import ConanFile, MSBuild, tools
+from conans import ConanFile, MSBuild, tools, CMake
 from conans.errors import ConanException
 from datetime import datetime
 import os, glob, shutil
@@ -39,12 +39,7 @@ class TCMallocConan(ConanFile):
     license = "BSD 3-Clause"
     description = "Thread-Cached Malloc"
     url = "https://github.com/odant/conan-tcmalloc"
-    settings = {
-        "os": ["Windows"],
-        "compiler": ["Visual Studio"],
-        "build_type": ["Debug", "Release"],
-        "arch": ["x86_64", "x86"]
-    }
+    settings = "os", "compiler", "build_type", "arch"
     options = {
         "dll_sign": [True, False]
     }
@@ -63,14 +58,26 @@ class TCMallocConan(ConanFile):
     def build_requirements(self):
         if get_safe(self.options, "dll_sign"):
             self.build_requires("windows_signtool/[~=1.1]@%s/stable" % self.user)
-
+        if self.settings.os != "Windows":
+            self.build_requires("ninja/[>=1.10.2]")
+    
     def source(self):
         tools.patch(patch_file="libtcmalloc_minimal.vcxproj.patch")
 
     def build(self):
         if self.settings.compiler == "Visual Studio":
             self.msvc_build()
+        else:
+            self.cmake_build()
 
+    def cmake_build(self):
+        cmake = CMake(self, build_type=self.settings.build_type, generator="Ninja")
+        cmake.verbose = False
+        source_folder = "./src"
+        cmake.configure(source_folder=source_folder)
+        cmake.build(target="tcmalloc_minimal")
+        #cmake.install()
+    
     def msvc_build(self):
         version_h = generateVersionH(self.version)
         tools.save(os.path.join(self.build_folder, "src", "vsprojects", "libtcmalloc_minimal", "version.h"), version_h)
@@ -92,6 +99,8 @@ class TCMallocConan(ConanFile):
             self.copy("tcmallocd.lib", dst="lib", src=debugPath, keep_path=False)
             self.copy("tcmallocd.dll", dst="bin", src=debugPath, keep_path=False)
             self.copy("tcmallocd.pdb", dst="bin", src=debugPath, keep_path=False)
+        self.copy("*.h", dst="include", src="src/src/gperftools", keep_path=False)
+        self.copy("libtcmalloc_minimal.so*", dst="lib", src=".", symlinks=True, keep_path=False)
         # Sign DLL
         if get_safe(self.options, "dll_sign"):
             import windows_signtool
