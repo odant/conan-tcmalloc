@@ -9,7 +9,11 @@ enable_testing()
 
 add_executable(test_package_CONAN_PKG test_package.cpp)
 target_link_libraries(test_package_CONAN_PKG CONAN_PKG::tcmalloc)
-set_target_properties(test_package_CONAN_PKG PROPERTIES LINK_FLAGS "/INCLUDE:__tcmalloc")
+
+if (WIN32)
+    set_target_properties(test_package_CONAN_PKG PROPERTIES LINK_FLAGS "/INCLUDE:__tcmalloc")
+endif()
+
 add_test(
     NAME test_package_CONAN_PKG
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin
@@ -28,7 +32,9 @@ if("${CMAKE_BUILD_TYPE}" STREQUAL "Release")
 
     add_executable(binary_trees_tcmalloc binary_trees.cc)
     target_link_libraries(binary_trees_tcmalloc CONAN_PKG::tcmalloc)
-    set_target_properties(binary_trees_tcmalloc PROPERTIES LINK_FLAGS "/INCLUDE:__tcmalloc")
+    if (WIN32)
+        set_target_properties(binary_trees_tcmalloc PROPERTIES LINK_FLAGS "/INCLUDE:__tcmalloc")
+    endif()
     add_test(
         NAME binary_trees_tcmalloc
         WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin
