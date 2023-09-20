@@ -28,7 +28,7 @@
 // This is a unit test for exercising fragmentation of large (over 1
 // meg) page spans. It makes sure that allocations/releases of
 // increasing memory chunks do not blowup memory
-// usage. See also https://code.google.com/p/gperftools/issues/detail?id=368
+// usage. See also https://github.com/gperftools/gperftools/issues/371
 
 
 #include <stddef.h>
@@ -38,13 +38,14 @@
 #include "base/logging.h"
 #include "common.h"
 #include <gperftools/malloc_extension.h>
+#include <gperftools/tcmalloc.h>
 
 
 int main (int argc, char** argv) {
   for (int pass = 1; pass <= 3; pass++) {
     size_t size = 100*1024*1024;
     while (size < 500*1024*1024) {
-      void *ptr = malloc(size);
+      void *ptr = tc_malloc(size);
       free(ptr);
       size += 20000;
 

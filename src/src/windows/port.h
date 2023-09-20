@@ -101,10 +101,6 @@
 
 /* ----------------------------------- BASIC TYPES */
 
-#ifndef HAVE_STDINT_H
-# error  Do not know how to set up type aliases.  Edit port.h for your system.
-#endif
-
 /* I guess MSVC's <types.h> doesn't include ssize_t by default? */
 #ifdef _MSC_VER
 typedef intptr_t ssize_t;
@@ -115,8 +111,6 @@ typedef intptr_t ssize_t;
 #ifndef HAVE_PTHREAD   /* not true for MSVC, but may be true for MSYS */
 typedef DWORD pthread_t;
 typedef DWORD pthread_key_t;
-typedef LONG pthread_once_t;
-enum { PTHREAD_ONCE_INIT = 0 };   /* important that this be 0! for SpinLock */
 
 inline pthread_t pthread_self(void) {
   return GetCurrentThreadId();
@@ -132,8 +126,7 @@ inline bool pthread_equal(pthread_t left, pthread_t right) {
  * we therefore shouldn't be #including directly.  This hack keeps us from
  * doing so.  TODO(csilvers): do something more principled.
  */
-#define GOOGLE_MAYBE_THREADS_H_ 1
-/* This replaces maybe_threads.{h,cc} */
+#define HAVE_PERFTOOLS_PTHREAD_KEYS
 
 EXTERN_C pthread_key_t PthreadKeyCreate(void (*destr_fn)(void*));  /* port.cc */
 
@@ -162,9 +155,6 @@ inline int perftools_pthread_setspecific(pthread_key_t key, const void *value) {
     return GetLastError();
 }
 
-EXTERN_C int perftools_pthread_once(pthread_once_t *once_control,
-                                    void (*init_routine)(void));
-
 #endif  /* __cplusplus */
 
 inline void sched_yield(void) {
@@ -179,82 +169,6 @@ inline void sched_yield(void) {
  * things we need to do before main()!  So this kind of TLS is safe for us.
  */
 #define __thread __declspec(thread)
-
-/*
- * This code is obsolete, but I keep it around in case we are ever in
- * an environment where we can't or don't want to use google spinlocks
- * (from base/spinlock.{h,cc}).  In that case, uncommenting this out,
- * and removing spinlock.cc from the build, should be enough to revert
- * back to using native spinlocks.
- */
-#if 0
-// Windows uses a spinlock internally for its mutexes, making our life easy!
-// However, the Windows spinlock must always be initialized, making life hard,
-// since we want LINKER_INITIALIZED.  We work around this by having the
-// linker initialize a bool to 0, and check that before accessing the mutex.
-// This replaces spinlock.{h,cc}, and all the stuff it depends on (atomicops)
-#ifdef __cplusplus
-class SpinLock {
- public:
-  SpinLock() : initialize_token_(PTHREAD_ONCE_INIT) {}
-  // Used for global SpinLock vars (see base/spinlock.h for more details).
-  enum StaticInitializer { LINKER_INITIALIZED };
-  explicit SpinLock(StaticInitializer) : initialize_token_(PTHREAD_ONCE_INIT) {
-    perftools_pthread_once(&initialize_token_, InitializeMutex);
-  }
-
-  // It's important SpinLock not have a destructor: otherwise we run
-  // into problems when the main thread has exited, but other threads
-  // are still running and try to access a main-thread spinlock.  This
-  // means we leak mutex_ (we should call DeleteCriticalSection()
-  // here).  However, I've verified that all SpinLocks used in
-  // perftools have program-long scope anyway, so the leak is
-  // perfectly fine.  But be aware of this for the future!
-
-  void Lock() {
-    // You'd thionk this would be unnecessary, since we call
-    // InitializeMutex() in our constructor.  But sometimes Lock() can
-    // be called before our constructor is!  This can only happen in
-    // global constructors, when this is a global.  If we live in
-    // bar.cc, and some global constructor in foo.cc calls a routine
-    // in bar.cc that calls this->Lock(), then Lock() may well run
-    // before our global constructor does.  To protect against that,
-    // we do this check.  For SpinLock objects created after main()
-    // has started, this pthread_once call will always be a noop.
-    perftools_pthread_once(&initialize_token_, InitializeMutex);
-    EnterCriticalSection(&mutex_);
-  }
-  void Unlock() {
-    LeaveCriticalSection(&mutex_);
-  }
-
-  // Used in assertion checks: assert(lock.IsHeld()) (see base/spinlock.h).
-  inline bool IsHeld() const {
-    // This works, but probes undocumented internals, so I've commented it out.
-    // c.f. http://msdn.microsoft.com/msdnmag/issues/03/12/CriticalSections/
-    //return mutex_.LockCount>=0 && mutex_.OwningThread==GetCurrentThreadId();
-    return true;
-  }
- private:
-  void InitializeMutex() { InitializeCriticalSection(&mutex_); }
-
-  pthread_once_t initialize_token_;
-  CRITICAL_SECTION mutex_;
-};
-
-class SpinLockHolder {  // Acquires a spinlock for as long as the scope lasts
- private:
-  SpinLock* lock_;
- public:
-  inline explicit SpinLockHolder(SpinLock* l) : lock_(l) { l->Lock(); }
-  inline ~SpinLockHolder() { lock_->Unlock(); }
-};
-#endif  // #ifdef __cplusplus
-
-// This keeps us from using base/spinlock.h's implementation of SpinLock.
-#define BASE_SPINLOCK_H_ 1
-
-#endif  /* #if 0 */
 
 /* ----------------------------------- MMAP and other memory allocation */
 
@@ -316,21 +230,6 @@ inline int perftools_vsnprintf(char *str, size_t size, const char *format,
   str[size-1] = '\0';
   return _vsnprintf(str, size-1, format, ap);
 }
-#endif
-
-#ifndef HAVE_INTTYPES_H
-#define PRIx64  "I64x"
-#define SCNx64  "I64x"
-#define PRId64  "I64d"
-#define SCNd64  "I64d"
-#define PRIu64  "I64u"
-#ifdef _WIN64
-# define PRIuPTR "llu"
-# define PRIxPTR "llx"
-#else
-# define PRIuPTR "lu"
-# define PRIxPTR "lx"
-#endif
 #endif
 
 /* ----------------------------------- FILE IO */

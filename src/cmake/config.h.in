@@ -65,12 +65,6 @@
    */
 #cmakedefine01 HAVE_DECL_VALLOC
 
-/* Define to 1 if you have the <dlfcn.h> header file. */
-#cmakedefine HAVE_DLFCN_H
-
-/* Define to 1 if the system has the type `Elf32_Versym'. */
-#cmakedefine HAVE_ELF32_VERSYM
-
 /* Define to 1 if you have the <execinfo.h> header file. */
 #cmakedefine HAVE_EXECINFO_H
 
@@ -92,14 +86,10 @@
 /* Define to 1 if you have the <grp.h> header file. */
 #cmakedefine HAVE_GRP_H
 
-/* Define to 1 if you have the <inttypes.h> header file. */
-#cmakedefine HAVE_INTTYPES_H
-
 /* Define to 1 if you have the <libunwind.h> header file. */
-#cmakedefine HAVE_LIBUNWIND_H
+#cmakedefine01 HAVE_LIBUNWIND_H
 
-/* Define to 1 if you have the <linux/ptrace.h> header file. */
-#cmakedefine HAVE_LINUX_PTRACE_H
+#cmakedefine USE_LIBUNWIND
 
 /* Define if this is Linux that has SIGEV_THREAD_ID */
 #cmakedefine01 HAVE_LINUX_SIGEV_THREAD_ID
@@ -109,9 +99,6 @@
 
 /* Define to 1 if you have the <malloc/malloc.h> header file. */
 #cmakedefine HAVE_MALLOC_MALLOC_H
-
-/* Define to 1 if you have the <memory.h> header file. */
-#cmakedefine HAVE_MEMORY_H
 
 /* Define to 1 if you have a working `mmap' system call. */
 #cmakedefine HAVE_MMAP
@@ -138,18 +125,6 @@
 /* Define to 1 if you have the <sched.h> header file. */
 #cmakedefine HAVE_SCHED_H
 
-/* Define to 1 if you have the <stdint.h> header file. */
-#cmakedefine HAVE_STDINT_H
-
-/* Define to 1 if you have the <stdlib.h> header file. */
-#cmakedefine HAVE_STDLIB_H 1
-
-/* Define to 1 if you have the <strings.h> header file. */
-#cmakedefine HAVE_STRINGS_H
-
-/* Define to 1 if you have the <string.h> header file. */
-#cmakedefine HAVE_STRING_H
-
 /* Define to 1 if the system has the type `struct mallinfo'. */
 #cmakedefine HAVE_STRUCT_MALLINFO
 
@@ -159,26 +134,20 @@
 /* Define to 1 if you have the <sys/malloc.h> header file. */
 #cmakedefine HAVE_SYS_MALLOC_H
 
-/* Define to 1 if you have the <sys/prctl.h> header file. */
-#cmakedefine HAVE_SYS_PRCTL_H
-
 /* Define to 1 if you have the <sys/resource.h> header file. */
 #cmakedefine HAVE_SYS_RESOURCE_H
 
 /* Define to 1 if you have the <sys/socket.h> header file. */
 #cmakedefine HAVE_SYS_SOCKET_H
 
-/* Define to 1 if you have the <sys/stat.h> header file. */
-#cmakedefine HAVE_SYS_STAT_H
-
 /* Define to 1 if you have the <sys/syscall.h> header file. */
-#cmakedefine HAVE_SYS_SYSCALL_H
+#cmakedefine01 HAVE_SYS_SYSCALL_H
 
 /* Define to 1 if you have the <sys/types.h> header file. */
 #cmakedefine HAVE_SYS_TYPES_H
 
 /* Define to 1 if you have the <sys/ucontext.h> header file. */
-#cmakedefine HAVE_SYS_UCONTEXT_H
+#cmakedefine01 HAVE_SYS_UCONTEXT_H
 
 /* Define to 1 if you have the <sys/wait.h> header file. */
 #cmakedefine HAVE_SYS_WAIT_H
@@ -187,7 +156,7 @@
 #cmakedefine HAVE_TLS
 
 /* Define to 1 if you have the <ucontext.h> header file. */
-#cmakedefine HAVE_UCONTEXT_H
+#cmakedefine01 HAVE_UCONTEXT_H
 
 /* Define to 1 if you have the <unistd.h> header file. */
 #cmakedefine HAVE_UNISTD_H
@@ -208,13 +177,10 @@
 #cmakedefine HAVE___ENVIRON
 
 /* Define to 1 if you have the `__sbrk' function. */
-#cmakedefine HAVE___SBRK
+#cmakedefine01 HAVE___SBRK
 
 /* prefix where we look for installed files */
 #cmakedefine INSTALL_PREFIX
-
-/* Define to 1 if int32_t is equivalent to intptr_t */
-#cmakedefine INT32_EQUALS_INTPTR
 
 /* Define to the sub-directory where libtool stores uninstalled libraries. */
 #cmakedefine LT_OBJDIR
@@ -269,13 +235,6 @@
 #ifdef __FreeBSD__
 #define PTHREADS_CRASHES_IF_RUN_TOO_EARLY 1
 #endif
-
-/* Define to necessary symbol if this constant uses a non-standard name on
-   your system. */
-#define PTHREAD_CREATE_JOINABLE @PTHREAD_CREATE_JOINABLE@
-
-/* Define to 1 if you have the ANSI C header files. */
-#define STDC_HEADERS 1
 
 /* Define 8 bytes of allocation alignment for tcmalloc */
 #cmakedefine TCMALLOC_ALIGN_8BYTES

@@ -9,6 +9,7 @@
 
 #include <stdio.h>
 
+#include <limits>
 #include <memory>
 
 #include "page_heap.h"
@@ -20,19 +21,24 @@ DECLARE_int64(tcmalloc_heap_limit_mb);
 
 namespace {
 
-// The system will only release memory if the block size is equal or hight than
-// system page size.
-static bool HaveSystemRelease =
-    TCMalloc_SystemRelease(
-      TCMalloc_SystemAlloc(getpagesize(), NULL, 0), getpagesize());
+// TODO: add testing from >1 min_span_size setting.
+
+static bool HaveSystemRelease() {
+  static bool retval = ([] () {
+    size_t actual;
+    auto ptr = TCMalloc_SystemAlloc(kPageSize, &actual, 0);
+    return TCMalloc_SystemRelease(ptr, actual);
+  }());
+  return retval;
+}
 
 static void CheckStats(const tcmalloc::PageHeap* ph,
                        uint64_t system_pages,
                        uint64_t free_pages,
                        uint64_t unmapped_pages) {
-  tcmalloc::PageHeap::Stats stats = ph->stats();
+  tcmalloc::PageHeap::Stats stats = ph->StatsLocked();
 
-  if (!HaveSystemRelease) {
+  if (!HaveSystemRelease()) {
     free_pages += unmapped_pages;
     unmapped_pages = 0;
   }
@@ -53,12 +59,15 @@ static void TestPageHeap_Stats() {
   CheckStats(ph.get(), 256, 0, 0);
 
   // Split span 's1' into 's1', 's2'.  Delete 's2'
-  tcmalloc::Span* s2 = ph->Split(s1, 128);
+  tcmalloc::Span* s2 = ph->SplitForTest(s1, 128);
   ph->Delete(s2);
   CheckStats(ph.get(), 256, 128, 0);
 
   // Unmap deleted span 's2'
-  ph->ReleaseAtLeastNPages(1);
+  {
+      SpinLockHolder l(ph->pageheap_lock());
+      ph->ReleaseAtLeastNPages(1);
+  }
   CheckStats(ph.get(), 256, 0, 128);
 
   // Delete span 's1'
@@ -101,6 +110,13 @@ static void TestPageHeap_Limit() {
 
   std::unique_ptr<tcmalloc::PageHeap> ph(new tcmalloc::PageHeap());
 
+  // Lets also test if huge number of pages is ooming properly
+  {
+    auto res = ph->New(std::numeric_limits<Length>::max());
+    CHECK_EQ(res, nullptr);
+    CHECK_EQ(errno, ENOMEM);
+  }
+
   CHECK_EQ(kMaxPages, 1 << (20 - kPageShift));
 
   // We do not know much is taken from the system for other purposes,
@@ -132,11 +148,12 @@ static void TestPageHeap_Limit() {
     tcmalloc::Span *defragmented =
         ph->New(kNumberMaxPagesSpans / 2 * kMaxPages);
 
-    if (HaveSystemRelease) {
+    if (HaveSystemRelease()) {
       // EnsureLimit should release deleted normal spans
       EXPECT_NE(defragmented, NULL);
-      EXPECT_TRUE(ph->CheckExpensive());
-      ph->Delete(defragmented);
+      ph->PrepareAndDelete(defragmented, [&] () {
+        EXPECT_TRUE(ph->CheckExpensive());
+      });
     }
     else
     {
@@ -166,14 +183,17 @@ static void TestPageHeap_Limit() {
 
     for (Length len = kMaxPages >> 2;
          len < kNumberMaxPagesSpans / 2 * kMaxPages; len = len << 1) {
-      if(len <= kMaxPages >> 1 || HaveSystemRelease) {
+      if(len <= kMaxPages >> 1 || HaveSystemRelease()) {
         tcmalloc::Span *s = ph->New(len);
         EXPECT_NE(s, NULL);
         ph->Delete(s);
       }
     }
 
-    EXPECT_TRUE(ph->CheckExpensive());
+    {
+        SpinLockHolder l(ph->pageheap_lock());
+        EXPECT_TRUE(ph->CheckExpensive());
+    }
 
     for (int i=1; i<kNumberMaxPagesSpans * 2; i += 2) {
       ph->Delete(spans[i]);

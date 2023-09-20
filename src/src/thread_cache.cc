@@ -40,7 +40,6 @@
 #include "base/spinlock.h"              // for SpinLockHolder
 #include "getenv_safe.h"                // for TCMallocGetenvSafe
 #include "central_freelist.h"           // for CentralFreeListPadded
-#include "maybe_threads.h"
 
 using std::min;
 using std::max;
@@ -100,7 +99,7 @@ void ThreadCache::Init(pthread_t tid) {
 
   uint32_t sampler_seed;
   memcpy(&sampler_seed, &tid, sizeof(sampler_seed));
-  sampler_.Init(sampler_seed);
+  sampler_.Init(uint64_t{sampler_seed} ^ reinterpret_cast<uintptr_t>(&sampler_seed));
 }
 
 void ThreadCache::Cleanup() {
@@ -299,6 +298,12 @@ void ThreadCache::InitModule() {
   // We do "late" part of initialization without holding lock since
   // there is chance it'll recurse into malloc
   Static::InitLateMaybeRecursive();
+
+#ifndef NDEBUG
+  // pthread_atfork above may malloc sometimes. Lets ensure we test
+  // that malloc works from here.
+  (operator delete)((operator new)(1));
+#endif
 }
 
 void ThreadCache::InitTSD() {
@@ -444,12 +449,6 @@ void ThreadCache::BecomeIdle() {
 
   // We can now get rid of the heap
   DeleteCache(heap);
-}
-
-void ThreadCache::BecomeTemporarilyIdle() {
-  ThreadCache* heap = GetCacheIfPresent();
-  if (heap)
-    heap->Cleanup();
 }
 
 void ThreadCache::DestroyThreadCache(void* ptr) {

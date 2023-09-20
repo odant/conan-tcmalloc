@@ -40,7 +40,10 @@
 #define BASE_SPINLOCK_H_
 
 #include <config.h>
-#include "base/atomicops.h"
+
+#include <atomic>
+#include <type_traits>
+
 #include "base/basictypes.h"
 #include "base/dynamic_annotations.h"
 #include "base/thread_annotations.h"
@@ -63,9 +66,9 @@ class LOCKABLE SpinLock {
   }
 
   // Acquire this SpinLock.
-  inline void Lock() EXCLUSIVE_LOCK_FUNCTION() {
-    if (base::subtle::Acquire_CompareAndSwap(&lockword_, kSpinLockFree,
-                                             kSpinLockHeld) != kSpinLockFree) {
+  void Lock() EXCLUSIVE_LOCK_FUNCTION() {
+    int old = kSpinLockFree;
+    if (!lockword_.compare_exchange_weak(old, kSpinLockHeld, std::memory_order_acquire)) {
       SlowLock();
     }
   }
@@ -74,17 +77,14 @@ class LOCKABLE SpinLock {
   // acquisition was successful.  If the lock was not acquired, false is
   // returned.  If this SpinLock is free at the time of the call, TryLock
   // will return true with high probability.
-  inline bool TryLock() EXCLUSIVE_TRYLOCK_FUNCTION(true) {
-    bool res =
-        (base::subtle::Acquire_CompareAndSwap(&lockword_, kSpinLockFree,
-                                              kSpinLockHeld) == kSpinLockFree);
-    return res;
+  bool TryLock() EXCLUSIVE_TRYLOCK_FUNCTION(true) {
+    int old = kSpinLockFree;
+    return lockword_.compare_exchange_weak(old, kSpinLockHeld);
   }
 
   // Release this SpinLock, which must be held by the calling thread.
-  inline void Unlock() UNLOCK_FUNCTION() {
-    uint64 prev_value = static_cast<uint64>(
-        base::subtle::Release_AtomicExchange(&lockword_, kSpinLockFree));
+  void Unlock() UNLOCK_FUNCTION() {
+    int prev_value = lockword_.exchange(kSpinLockFree, std::memory_order_release);
     if (prev_value != kSpinLockHeld) {
       // Speed the wakeup of any waiter.
       SlowUnlock();
@@ -94,8 +94,8 @@ class LOCKABLE SpinLock {
   // Determine if the lock is held.  When the lock is held by the invoking
   // thread, true will always be returned. Intended to be used as
   // CHECK(lock.IsHeld()).
-  inline bool IsHeld() const {
-    return base::subtle::NoBarrier_Load(&lockword_) != kSpinLockFree;
+  bool IsHeld() const {
+    return lockword_.load(std::memory_order_relaxed) != kSpinLockFree;
   }
 
   static const base::LinkerInitialized LINKER_INITIALIZED;  // backwards compat
@@ -104,11 +104,11 @@ class LOCKABLE SpinLock {
   enum { kSpinLockHeld = 1 };
   enum { kSpinLockSleeper = 2 };
 
-  volatile Atomic32 lockword_;
+  std::atomic<int> lockword_;
 
   void SlowLock();
   void SlowUnlock();
-  Atomic32 SpinLoop();
+  int SpinLoop();
 
   DISALLOW_COPY_AND_ASSIGN(SpinLock);
 };
@@ -119,14 +119,48 @@ class SCOPED_LOCKABLE SpinLockHolder {
  private:
   SpinLock* lock_;
  public:
-  inline explicit SpinLockHolder(SpinLock* l) EXCLUSIVE_LOCK_FUNCTION(l)
+  explicit SpinLockHolder(SpinLock* l) EXCLUSIVE_LOCK_FUNCTION(l)
       : lock_(l) {
     l->Lock();
   }
-  inline ~SpinLockHolder() UNLOCK_FUNCTION() { lock_->Unlock(); }
+  SpinLockHolder(const SpinLockHolder&) = delete;
+  ~SpinLockHolder() UNLOCK_FUNCTION() {
+    lock_->Unlock();
+  }
 };
 // Catch bug where variable name is omitted, e.g. SpinLockHolder (&lock);
 #define SpinLockHolder(x) COMPILE_ASSERT(0, spin_lock_decl_missing_var_name)
+
+namespace tcmalloc {
+
+class TrivialOnce {
+public:
+  template <typename Body>
+  bool RunOnce(Body body) {
+    auto done_atomic = reinterpret_cast<std::atomic<int>*>(&done_flag_);
+    if (done_atomic->load(std::memory_order_acquire) == 1) {
+      return false;
+    }
+
+    SpinLockHolder h(reinterpret_cast<SpinLock*>(&lock_storage_));
+
+    if (done_atomic->load(std::memory_order_relaxed) == 1) {
+      // barrier provided by lock
+      return false;
+    }
+    body();
+    done_atomic->store(1, std::memory_order_release);
+    return true;
+  }
+
+private:
+  int done_flag_;
+  alignas(alignof(SpinLock)) char lock_storage_[sizeof(SpinLock)];
+};
+
+static_assert(std::is_trivial<TrivialOnce>::value == true, "");
+
+}  // namespace tcmalloc
 
 
 #endif  // BASE_SPINLOCK_H_

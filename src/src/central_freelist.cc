@@ -39,6 +39,12 @@
 #include "page_heap.h"         // for PageHeap
 #include "static_vars.h"       // for Static
 
+#if defined(__has_builtin)
+#if __has_builtin(__builtin_add_overflow)
+#define USE_ADD_OVERFLOW
+#endif
+#endif
+
 using std::min;
 using std::max;
 
@@ -87,22 +93,9 @@ void CentralFreeList::ReleaseListToSpans(void* start) {
   }
 }
 
-// MapObjectToSpan should logically be part of ReleaseToSpans.  But
-// this triggers an optimization bug in gcc 4.5.0.  Moving to a
-// separate function, and making sure that function isn't inlined,
-// seems to fix the problem.  It also should be fixed for gcc 4.5.1.
-static
-#if __GNUC__ == 4 && __GNUC_MINOR__ == 5 && __GNUC_PATCHLEVEL__ == 0
-__attribute__ ((noinline))
-#endif
-Span* MapObjectToSpan(void* object) {
+void CentralFreeList::ReleaseToSpans(void* object) {
   const PageID p = reinterpret_cast<uintptr_t>(object) >> kPageShift;
   Span* span = Static::pageheap()->GetDescriptor(p);
-  return span;
-}
-
-void CentralFreeList::ReleaseToSpans(void* object) {
-  Span* span = MapObjectToSpan(object);
   ASSERT(span != NULL);
   ASSERT(span->refcount > 0);
 
@@ -120,6 +113,7 @@ void CentralFreeList::ReleaseToSpans(void* object) {
       ASSERT(p != object);
       got++;
     }
+    (void)got;
     ASSERT(got + span->refcount ==
            (span->length<<kPageShift) /
            Static::sizemap()->ByteSizeForClass(span->sizeclass));
@@ -135,10 +129,7 @@ void CentralFreeList::ReleaseToSpans(void* object) {
 
     // Release central list lock while operating on pageheap
     lock_.Unlock();
-    {
-      SpinLockHolder h(Static::pageheap_lock());
-      Static::pageheap()->Delete(span);
-    }
+    Static::pageheap()->Delete(span);
     lock_.Lock();
   } else {
     *(reinterpret_cast<void**>(object)) = span->objects;
@@ -320,13 +311,8 @@ void CentralFreeList::Populate() {
   lock_.Unlock();
   const size_t npages = Static::sizemap()->class_to_pages(size_class_);
 
-  Span* span;
-  {
-    SpinLockHolder h(Static::pageheap_lock());
-    span = Static::pageheap()->New(npages);
-    if (span) Static::pageheap()->RegisterSizeClass(span, size_class_);
-  }
-  if (span == NULL) {
+  Span* span = Static::pageheap()->NewWithSizeClass(npages, size_class_);
+  if (span == nullptr) {
     Log(kLog, __FILE__, __LINE__,
         "tcmalloc: allocation failed", npages << kPageShift);
     lock_.Lock();
@@ -347,13 +333,39 @@ void CentralFreeList::Populate() {
   char* limit = ptr + (npages << kPageShift);
   const size_t size = Static::sizemap()->ByteSizeForClass(size_class_);
   int num = 0;
-  while (ptr + size <= limit) {
+
+  // Note, when ptr is close to the top of address space, ptr + size
+  // might overflow the top of address space before we're able to
+  // detect that it exceeded limit. So we need to be careful. See
+  // https://github.com/gperftools/gperftools/issues/1323.
+  ASSERT(limit - size >= ptr);
+  for (;;) {
+
+#ifndef USE_ADD_OVERFLOW
+    auto nextptr = reinterpret_cast<char *>(reinterpret_cast<uintptr_t>(ptr) + size);
+    if (nextptr < ptr || nextptr > limit) {
+      break;
+    }
+#else
+    // Same as above, just helping compiler a bit to produce better code
+    uintptr_t nextaddr;
+    if (__builtin_add_overflow(reinterpret_cast<uintptr_t>(ptr), size, &nextaddr)) {
+      break;
+    }
+    char* nextptr = reinterpret_cast<char*>(nextaddr);
+    if (nextptr > limit) {
+      break;
+    }
+#endif
+
+    // [ptr, ptr+size) bytes are all valid bytes, so append them
     *tail = ptr;
     tail = reinterpret_cast<void**>(ptr);
-    ptr += size;
     num++;
+    ptr = nextptr;
   }
   ASSERT(ptr <= limit);
+  ASSERT(ptr > limit - size); // same as ptr + size > limit but avoiding overflow
   *tail = NULL;
   span->refcount = 0; // No sub-object in use yet
 

@@ -1,5 +1,5 @@
-/* -*- Mode: c; c-basic-offset: 2; indent-tabs-mode: nil -*- */
-/* Copyright (c) 2005-2007, Google Inc.
+/* -*- Mode: C++; c-basic-offset: 2; indent-tabs-mode: nil -*-
+ * Copyright (c) 2023, gperftools Contributors
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -27,58 +27,31 @@
  * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * ---
- * Author: Markus Gutschke
  */
 
+#ifndef SAFE_STRERROR_H
+#define SAFE_STRERROR_H
 #include "config.h"
 
-#include "base/thread_lister.h"
+#include "base/basictypes.h"
 
-#include <stdio.h>         /* needed for NULL on some powerpc platforms (?!) */
-#include <sys/types.h>
-#include <unistd.h>        /* for getpid */
+namespace tcmalloc {
 
-#ifdef HAVE_SYS_PRCTL
-# include <sys/prctl.h>
-#endif
+// SafeStrError works pretty much like strerror, but it bypasses all
+// the locale stuff (which will malloc occasionally). It simply
+// returns errno constant name (like "ENOMEM"), or if errno is not
+// recognized it will return "errno <number>" string (kept in internal
+// buf_ buffer).
+class SafeStrError {
+public:
+  explicit ATTRIBUTE_VISIBILITY_HIDDEN SafeStrError(int errnum);
+  const char* c_str() { return result_; }
+private:
+  const char* result_;
+  char buf_[32];
+};
 
-#include "base/linuxthreads.h"
-/* Include other thread listers here that define THREADS macro
- * only when they can provide a good implementation.
- */
+}  // namespace tcmalloc
 
-#ifndef THREADS
 
-/* Default trivial thread lister for single-threaded applications,
- * or if the multi-threading code has not been ported, yet.
- */
-
-int TCMalloc_ListAllProcessThreads(void *parameter,
-				   ListAllProcessThreadsCallBack callback, ...) {
-  int rc;
-  va_list ap;
-  pid_t pid;
-
-#ifdef HAVE_SYS_PRCTL
-  int dumpable = prctl(PR_GET_DUMPABLE, 0);
-  if (!dumpable)
-    prctl(PR_SET_DUMPABLE, 1);
-#endif
-  va_start(ap, callback);
-  pid = getpid();
-  rc = callback(parameter, 1, &pid, ap);
-  va_end(ap);
-#ifdef HAVE_SYS_PRCTL
-  if (!dumpable)
-    prctl(PR_SET_DUMPABLE, 0);
-#endif
-  return rc;
-}
-
-int TCMalloc_ResumeAllProcessThreads(int num_threads, pid_t *thread_pids) {
-  return 1;
-}
-
-#endif   /* ifndef THREADS */
+#endif  // SAFE_STRERROR_H

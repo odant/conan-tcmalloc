@@ -33,26 +33,23 @@
 
 #include <config.h>
 
-// Disable the glibc prototype of mremap(), as older versions of the
-// system headers define this function with only four arguments,
-// whereas newer versions allow an optional fifth argument:
-#ifdef HAVE_MMAP
-# define mremap glibc_mremap
-# include <sys/mman.h>
-# undef mremap
-#endif
+#include <gperftools/malloc_hook.h>
+#include "malloc_hook-inl.h"
 
 #include <stddef.h>
-#ifdef HAVE_STDINT_H
 #include <stdint.h>
+#if HAVE_SYS_SYSCALL_H
+#include <sys/syscall.h>
 #endif
+
+#ifdef HAVE_MMAP
+#include <sys/mman.h>
+#endif
+
 #include <algorithm>
 #include "base/logging.h"
 #include "base/spinlock.h"
 #include "maybe_emergency_malloc.h"
-#include "maybe_threads.h"
-#include "malloc_hook-inl.h"
-#include <gperftools/malloc_hook.h>
 
 // This #ifdef should almost never be set.  Set NO_TCMALLOC_SAMPLES if
 // you're porting to a system where you really can't get a stacktrace.
@@ -84,14 +81,14 @@ using std::copy;
 // symbols too early, at compile rather than link time.  By declaring it (weak)
 // here, then defining it below after its use, we can avoid the problem.
 extern "C" {
-ATTRIBUTE_WEAK void MallocHook_InitAtFirstAllocation_HeapLeakChecker();
+  ATTRIBUTE_WEAK int MallocHook_InitAtFirstAllocation_HeapLeakChecker() {
+    return 0;
+  }
 }
 
 namespace {
 
-void RemoveInitialHooksAndCallInitializers();  // below.
-
-pthread_once_t once = PTHREAD_ONCE_INIT;
+bool RemoveInitialHooksAndCallInitializers();  // below.
 
 // These hooks are installed in MallocHook as the only initial hooks.  The first
 // hook that is called will run RemoveInitialHooksAndCallInitializers (see the
@@ -113,25 +110,17 @@ pthread_once_t once = PTHREAD_ONCE_INIT;
 //   been installed yet.  I think the worst we can get is that some allocations
 //   will not get reported to some hooks set by the initializers called from
 //   RemoveInitialHooksAndCallInitializers.
-
+//
+// Note, RemoveInitialHooksAndCallInitializers returns false if
+// MallocHook_InitAtFirstAllocation_HeapLeakChecker was already called
+// (i.e. through mmap hooks). And true otherwise (i.e. we're first to
+// call it). In that former case (return of false), we assume that
+// heap checker already installed it's hook, so we don't re-execute
+// new hook.
 void InitialNewHook(const void* ptr, size_t size) {
-  perftools_pthread_once(&once, &RemoveInitialHooksAndCallInitializers);
-  MallocHook::InvokeNewHook(ptr, size);
-}
-
-void InitialPreMMapHook(const void* start,
-                               size_t size,
-                               int protection,
-                               int flags,
-                               int fd,
-                               off_t offset) {
-  perftools_pthread_once(&once, &RemoveInitialHooksAndCallInitializers);
-  MallocHook::InvokePreMmapHook(start, size, protection, flags, fd, offset);
-}
-
-void InitialPreSbrkHook(ptrdiff_t increment) {
-  perftools_pthread_once(&once, &RemoveInitialHooksAndCallInitializers);
-  MallocHook::InvokePreSbrkHook(increment);
+  if (RemoveInitialHooksAndCallInitializers()) {
+    MallocHook::InvokeNewHook(ptr, size);
+  }
 }
 
 // This function is called at most once by one of the above initial malloc
@@ -139,23 +128,19 @@ void InitialPreSbrkHook(ptrdiff_t increment) {
 // want to get control at the very first memory allocation.  The initializers
 // may assume that the initial malloc hooks have been removed.  The initializers
 // may set up malloc hooks and allocate memory.
-void RemoveInitialHooksAndCallInitializers() {
-  RAW_CHECK(MallocHook::RemoveNewHook(&InitialNewHook), "");
-  RAW_CHECK(MallocHook::RemovePreMmapHook(&InitialPreMMapHook), "");
-  RAW_CHECK(MallocHook::RemovePreSbrkHook(&InitialPreSbrkHook), "");
+bool RemoveInitialHooksAndCallInitializers() {
+  static tcmalloc::TrivialOnce once;
+  once.RunOnce([] () {
+    RAW_CHECK(MallocHook::RemoveNewHook(&InitialNewHook), "");
+  });
 
   // HeapLeakChecker is currently the only module that needs to get control on
   // the first memory allocation, but one can add other modules by following the
   // same weak/strong function pattern.
-  MallocHook_InitAtFirstAllocation_HeapLeakChecker();
+  return (MallocHook_InitAtFirstAllocation_HeapLeakChecker() != 0);
 }
 
 }  // namespace
-
-// Weak default initialization function that must go after its use.
-extern "C" void MallocHook_InitAtFirstAllocation_HeapLeakChecker() {
-  // Do nothing.
-}
 
 namespace base { namespace internal {
 
@@ -166,67 +151,66 @@ namespace base { namespace internal {
 static SpinLock hooklist_spinlock(base::LINKER_INITIALIZED);
 
 template <typename T>
-bool HookList<T>::Add(T value_as_t) {
-  AtomicWord value = bit_cast<AtomicWord>(value_as_t);
-  if (value == 0) {
+bool HookList<T>::Add(T value) {
+  if (value == T{}) {
     return false;
   }
   SpinLockHolder l(&hooklist_spinlock);
   // Find the first slot in data that is 0.
   int index = 0;
   while ((index < kHookListMaxValues) &&
-         (base::subtle::NoBarrier_Load(&priv_data[index]) != 0)) {
+         cast_priv_data(index)->load(std::memory_order_relaxed) != T{}) {
     ++index;
   }
   if (index == kHookListMaxValues) {
     return false;
   }
-  AtomicWord prev_num_hooks = base::subtle::Acquire_Load(&priv_end);
-  base::subtle::NoBarrier_Store(&priv_data[index], value);
+  uintptr_t prev_num_hooks = priv_end.load(std::memory_order_acquire);
+  cast_priv_data(index)->store(value, std::memory_order_relaxed);
   if (prev_num_hooks <= index) {
-    base::subtle::NoBarrier_Store(&priv_end, index + 1);
+    priv_end.store(index + 1, std::memory_order_relaxed);
   }
   return true;
 }
 
 template <typename T>
 void HookList<T>::FixupPrivEndLocked() {
-  AtomicWord hooks_end = base::subtle::NoBarrier_Load(&priv_end);
+  uintptr_t hooks_end = priv_end.load(std::memory_order_relaxed);
   while ((hooks_end > 0) &&
-         (base::subtle::NoBarrier_Load(&priv_data[hooks_end - 1]) == 0)) {
+         cast_priv_data(hooks_end-1)->load(std::memory_order_relaxed) == 0) {
     --hooks_end;
   }
-  base::subtle::NoBarrier_Store(&priv_end, hooks_end);
+  priv_end.store(hooks_end, std::memory_order_relaxed);
 }
 
 template <typename T>
-bool HookList<T>::Remove(T value_as_t) {
-  if (value_as_t == 0) {
+bool HookList<T>::Remove(T value) {
+  if (value == T{}) {
     return false;
   }
   SpinLockHolder l(&hooklist_spinlock);
-  AtomicWord hooks_end = base::subtle::NoBarrier_Load(&priv_end);
+  uintptr_t hooks_end = priv_end.load(std::memory_order_relaxed);
   int index = 0;
-  while (index < hooks_end && value_as_t != bit_cast<T>(
-             base::subtle::NoBarrier_Load(&priv_data[index]))) {
+  while (index < hooks_end
+         && value != cast_priv_data(index)->load(std::memory_order_relaxed)) {
     ++index;
   }
   if (index == hooks_end) {
     return false;
   }
-  base::subtle::NoBarrier_Store(&priv_data[index], 0);
+  cast_priv_data(index)->store(T{}, std::memory_order_relaxed);
   FixupPrivEndLocked();
   return true;
 }
 
 template <typename T>
 int HookList<T>::Traverse(T* output_array, int n) const {
-  AtomicWord hooks_end = base::subtle::Acquire_Load(&priv_end);
+  uintptr_t hooks_end = priv_end.load(std::memory_order_acquire);
   int actual_hooks_end = 0;
   for (int i = 0; i < hooks_end && n > 0; ++i) {
-    AtomicWord data = base::subtle::Acquire_Load(&priv_data[i]);
-    if (data != 0) {
-      *output_array++ = bit_cast<T>(data);
+    T data = cast_priv_data(i)->load(std::memory_order_acquire);
+    if (data != T{}) {
+      *output_array++ = data;
       ++actual_hooks_end;
       --n;
     }
@@ -235,61 +219,31 @@ int HookList<T>::Traverse(T* output_array, int n) const {
 }
 
 template <typename T>
-T HookList<T>::ExchangeSingular(T value_as_t) {
-  AtomicWord value = bit_cast<AtomicWord>(value_as_t);
-  AtomicWord old_value;
+T HookList<T>::ExchangeSingular(T value) {
+  T old_value;
   SpinLockHolder l(&hooklist_spinlock);
-  old_value = base::subtle::NoBarrier_Load(&priv_data[kHookListSingularIdx]);
-  base::subtle::NoBarrier_Store(&priv_data[kHookListSingularIdx], value);
-  if (value != 0) {
-    base::subtle::NoBarrier_Store(&priv_end, kHookListSingularIdx + 1);
+  old_value = cast_priv_data(kHookListSingularIdx)->load(std::memory_order_relaxed);
+  cast_priv_data(kHookListSingularIdx)->store(value, std::memory_order_relaxed);
+  if (value != T{}) {
+    priv_end.store(kHookListSingularIdx + 1, std::memory_order_relaxed);
   } else {
     FixupPrivEndLocked();
   }
-  return bit_cast<T>(old_value);
+  return old_value;
 }
-
-// Initialize a HookList (optionally with the given initial_value in index 0).
-#define INIT_HOOK_LIST { 0 }
-#define INIT_HOOK_LIST_WITH_VALUE(initial_value)                \
-  { 1, { reinterpret_cast<AtomicWord>(initial_value) } }
 
 // Explicit instantiation for malloc_hook_test.cc.  This ensures all the methods
 // are instantiated.
 template struct HookList<MallocHook::NewHook>;
 
-HookList<MallocHook::NewHook> new_hooks_ =
-    INIT_HOOK_LIST_WITH_VALUE(&InitialNewHook);
-HookList<MallocHook::DeleteHook> delete_hooks_ = INIT_HOOK_LIST;
-HookList<MallocHook::PreMmapHook> premmap_hooks_ =
-    INIT_HOOK_LIST_WITH_VALUE(&InitialPreMMapHook);
-HookList<MallocHook::MmapHook> mmap_hooks_ = INIT_HOOK_LIST;
-HookList<MallocHook::MunmapHook> munmap_hooks_ = INIT_HOOK_LIST;
-HookList<MallocHook::MremapHook> mremap_hooks_ = INIT_HOOK_LIST;
-HookList<MallocHook::PreSbrkHook> presbrk_hooks_ =
-    INIT_HOOK_LIST_WITH_VALUE(InitialPreSbrkHook);
-HookList<MallocHook::SbrkHook> sbrk_hooks_ = INIT_HOOK_LIST;
-
-// These lists contain either 0 or 1 hooks.
-HookList<MallocHook::MmapReplacement> mmap_replacement_ = { 0 };
-HookList<MallocHook::MunmapReplacement> munmap_replacement_ = { 0 };
-
-#undef INIT_HOOK_LIST_WITH_VALUE
-#undef INIT_HOOK_LIST
+HookList<MallocHook::NewHook> new_hooks_{InitialNewHook};
+HookList<MallocHook::DeleteHook> delete_hooks_;
 
 } }  // namespace base::internal
 
 using base::internal::kHookListMaxValues;
 using base::internal::new_hooks_;
 using base::internal::delete_hooks_;
-using base::internal::premmap_hooks_;
-using base::internal::mmap_hooks_;
-using base::internal::mmap_replacement_;
-using base::internal::munmap_hooks_;
-using base::internal::munmap_replacement_;
-using base::internal::mremap_hooks_;
-using base::internal::presbrk_hooks_;
-using base::internal::sbrk_hooks_;
 
 // These are available as C bindings as well as C++, hence their
 // definition outside the MallocHook class.
@@ -317,108 +271,7 @@ int MallocHook_RemoveDeleteHook(MallocHook_DeleteHook hook) {
   return delete_hooks_.Remove(hook);
 }
 
-extern "C"
-int MallocHook_AddPreMmapHook(MallocHook_PreMmapHook hook) {
-  RAW_VLOG(10, "AddPreMmapHook(%p)", hook);
-  return premmap_hooks_.Add(hook);
-}
-
-extern "C"
-int MallocHook_RemovePreMmapHook(MallocHook_PreMmapHook hook) {
-  RAW_VLOG(10, "RemovePreMmapHook(%p)", hook);
-  return premmap_hooks_.Remove(hook);
-}
-
-extern "C"
-int MallocHook_SetMmapReplacement(MallocHook_MmapReplacement hook) {
-  RAW_VLOG(10, "SetMmapReplacement(%p)", hook);
-  // NOTE this is a best effort CHECK. Concurrent sets could succeed since
-  // this test is outside of the Add spin lock.
-  RAW_CHECK(mmap_replacement_.empty(), "Only one MMapReplacement is allowed.");
-  return mmap_replacement_.Add(hook);
-}
-
-extern "C"
-int MallocHook_RemoveMmapReplacement(MallocHook_MmapReplacement hook) {
-  RAW_VLOG(10, "RemoveMmapReplacement(%p)", hook);
-  return mmap_replacement_.Remove(hook);
-}
-
-extern "C"
-int MallocHook_AddMmapHook(MallocHook_MmapHook hook) {
-  RAW_VLOG(10, "AddMmapHook(%p)", hook);
-  return mmap_hooks_.Add(hook);
-}
-
-extern "C"
-int MallocHook_RemoveMmapHook(MallocHook_MmapHook hook) {
-  RAW_VLOG(10, "RemoveMmapHook(%p)", hook);
-  return mmap_hooks_.Remove(hook);
-}
-
-extern "C"
-int MallocHook_AddMunmapHook(MallocHook_MunmapHook hook) {
-  RAW_VLOG(10, "AddMunmapHook(%p)", hook);
-  return munmap_hooks_.Add(hook);
-}
-
-extern "C"
-int MallocHook_RemoveMunmapHook(MallocHook_MunmapHook hook) {
-  RAW_VLOG(10, "RemoveMunmapHook(%p)", hook);
-  return munmap_hooks_.Remove(hook);
-}
-
-extern "C"
-int MallocHook_SetMunmapReplacement(MallocHook_MunmapReplacement hook) {
-  RAW_VLOG(10, "SetMunmapReplacement(%p)", hook);
-  // NOTE this is a best effort CHECK. Concurrent sets could succeed since
-  // this test is outside of the Add spin lock.
-  RAW_CHECK(munmap_replacement_.empty(),
-            "Only one MunmapReplacement is allowed.");
-  return munmap_replacement_.Add(hook);
-}
-
-extern "C"
-int MallocHook_RemoveMunmapReplacement(MallocHook_MunmapReplacement hook) {
-  RAW_VLOG(10, "RemoveMunmapReplacement(%p)", hook);
-  return munmap_replacement_.Remove(hook);
-}
-
-extern "C"
-int MallocHook_AddMremapHook(MallocHook_MremapHook hook) {
-  RAW_VLOG(10, "AddMremapHook(%p)", hook);
-  return mremap_hooks_.Add(hook);
-}
-
-extern "C"
-int MallocHook_RemoveMremapHook(MallocHook_MremapHook hook) {
-  RAW_VLOG(10, "RemoveMremapHook(%p)", hook);
-  return mremap_hooks_.Remove(hook);
-}
-
-extern "C"
-int MallocHook_AddPreSbrkHook(MallocHook_PreSbrkHook hook) {
-  RAW_VLOG(10, "AddPreSbrkHook(%p)", hook);
-  return presbrk_hooks_.Add(hook);
-}
-
-extern "C"
-int MallocHook_RemovePreSbrkHook(MallocHook_PreSbrkHook hook) {
-  RAW_VLOG(10, "RemovePreSbrkHook(%p)", hook);
-  return presbrk_hooks_.Remove(hook);
-}
-
-extern "C"
-int MallocHook_AddSbrkHook(MallocHook_SbrkHook hook) {
-  RAW_VLOG(10, "AddSbrkHook(%p)", hook);
-  return sbrk_hooks_.Add(hook);
-}
-
-extern "C"
-int MallocHook_RemoveSbrkHook(MallocHook_SbrkHook hook) {
-  RAW_VLOG(10, "RemoveSbrkHook(%p)", hook);
-  return sbrk_hooks_.Remove(hook);
-}
+// Next are "legacy" singular new/delete hooks
 
 // The code below is DEPRECATED.
 extern "C"
@@ -432,43 +285,6 @@ MallocHook_DeleteHook MallocHook_SetDeleteHook(MallocHook_DeleteHook hook) {
   RAW_VLOG(10, "SetDeleteHook(%p)", hook);
   return delete_hooks_.ExchangeSingular(hook);
 }
-
-extern "C"
-MallocHook_PreMmapHook MallocHook_SetPreMmapHook(MallocHook_PreMmapHook hook) {
-  RAW_VLOG(10, "SetPreMmapHook(%p)", hook);
-  return premmap_hooks_.ExchangeSingular(hook);
-}
-
-extern "C"
-MallocHook_MmapHook MallocHook_SetMmapHook(MallocHook_MmapHook hook) {
-  RAW_VLOG(10, "SetMmapHook(%p)", hook);
-  return mmap_hooks_.ExchangeSingular(hook);
-}
-
-extern "C"
-MallocHook_MunmapHook MallocHook_SetMunmapHook(MallocHook_MunmapHook hook) {
-  RAW_VLOG(10, "SetMunmapHook(%p)", hook);
-  return munmap_hooks_.ExchangeSingular(hook);
-}
-
-extern "C"
-MallocHook_MremapHook MallocHook_SetMremapHook(MallocHook_MremapHook hook) {
-  RAW_VLOG(10, "SetMremapHook(%p)", hook);
-  return mremap_hooks_.ExchangeSingular(hook);
-}
-
-extern "C"
-MallocHook_PreSbrkHook MallocHook_SetPreSbrkHook(MallocHook_PreSbrkHook hook) {
-  RAW_VLOG(10, "SetPreSbrkHook(%p)", hook);
-  return presbrk_hooks_.ExchangeSingular(hook);
-}
-
-extern "C"
-MallocHook_SbrkHook MallocHook_SetSbrkHook(MallocHook_SbrkHook hook) {
-  RAW_VLOG(10, "SetSbrkHook(%p)", hook);
-  return sbrk_hooks_.ExchangeSingular(hook);
-}
-// End of DEPRECATED code section.
 
 // Note: embedding the function calls inside the traversal of HookList would be
 // very confusing, as it is legal for a hook to remove itself and add other
@@ -503,66 +319,6 @@ void MallocHook::InvokeDeleteHookSlow(const void* p) {
     return;
   }
   INVOKE_HOOKS(DeleteHook, delete_hooks_, (p));
-}
-
-void MallocHook::InvokePreMmapHookSlow(const void* start,
-                                       size_t size,
-                                       int protection,
-                                       int flags,
-                                       int fd,
-                                       off_t offset) {
-  INVOKE_HOOKS(PreMmapHook, premmap_hooks_, (start, size, protection, flags, fd,
-                                            offset));
-}
-
-void MallocHook::InvokeMmapHookSlow(const void* result,
-                                    const void* start,
-                                    size_t size,
-                                    int protection,
-                                    int flags,
-                                    int fd,
-                                    off_t offset) {
-  INVOKE_HOOKS(MmapHook, mmap_hooks_, (result, start, size, protection, flags,
-                                       fd, offset));
-}
-
-bool MallocHook::InvokeMmapReplacementSlow(const void* start,
-                                           size_t size,
-                                           int protection,
-                                           int flags,
-                                           int fd,
-                                           off_t offset,
-                                           void** result) {
-  INVOKE_REPLACEMENT(MmapReplacement, mmap_replacement_,
-                      (start, size, protection, flags, fd, offset, result));
-}
-
-void MallocHook::InvokeMunmapHookSlow(const void* p, size_t s) {
-  INVOKE_HOOKS(MunmapHook, munmap_hooks_, (p, s));
-}
-
-bool MallocHook::InvokeMunmapReplacementSlow(const void* p,
-                                             size_t s,
-                                             int* result) {
-  INVOKE_REPLACEMENT(MunmapReplacement, munmap_replacement_, (p, s, result));
-}
-
-void MallocHook::InvokeMremapHookSlow(const void* result,
-                                      const void* old_addr,
-                                      size_t old_size,
-                                      size_t new_size,
-                                      int flags,
-                                      const void* new_addr) {
-  INVOKE_HOOKS(MremapHook, mremap_hooks_, (result, old_addr, old_size, new_size,
-                                           flags, new_addr));
-}
-
-void MallocHook::InvokePreSbrkHookSlow(ptrdiff_t increment) {
-  INVOKE_HOOKS(PreSbrkHook, presbrk_hooks_, (increment));
-}
-
-void MallocHook::InvokeSbrkHookSlow(const void* result, ptrdiff_t increment) {
-  INVOKE_HOOKS(SbrkHook, sbrk_hooks_, (result, increment));
 }
 
 #undef INVOKE_HOOKS
@@ -678,34 +434,181 @@ extern "C" int MallocHook_GetCallerStackTrace(void** result, int max_depth,
 #endif
 }
 
-// On systems where we know how, we override mmap/munmap/mremap/sbrk
-// to provide support for calling the related hooks (in addition,
-// of course, to doing what these functions normally do).
+// All mmap hooks functions are empty and bogus. All of those below
+// are no op and we keep them only because we have them exposed in
+// headers we ship. So keep them for somewhat formal ABI compat.
+//
+// For non-public API for hooking mapping updates see
+// mmap_hook.h
 
-#if defined(__linux)
-# include "malloc_hook_mmap_linux.h"
+extern "C"
+int MallocHook_AddPreMmapHook(MallocHook_PreMmapHook hook) {
+  return 0;
+}
 
-#elif defined(__FreeBSD__)
-# include "malloc_hook_mmap_freebsd.h"
+extern "C"
+int MallocHook_RemovePreMmapHook(MallocHook_PreMmapHook hook) {
+  return 0;
+}
 
-#else
+extern "C"
+int MallocHook_SetMmapReplacement(MallocHook_MmapReplacement hook) {
+  return 0;
+}
+
+extern "C"
+int MallocHook_RemoveMmapReplacement(MallocHook_MmapReplacement hook) {
+  return 0;
+}
+
+extern "C"
+int MallocHook_AddMmapHook(MallocHook_MmapHook hook) {
+  return 0;
+}
+
+extern "C"
+int MallocHook_RemoveMmapHook(MallocHook_MmapHook hook) {
+  return 0;
+}
+
+extern "C"
+int MallocHook_AddMunmapHook(MallocHook_MunmapHook hook) {
+  return 0;
+}
+
+extern "C"
+int MallocHook_RemoveMunmapHook(MallocHook_MunmapHook hook) {
+  return 0;
+}
+
+extern "C"
+int MallocHook_SetMunmapReplacement(MallocHook_MunmapReplacement hook) {
+  return 0;
+}
+
+extern "C"
+int MallocHook_RemoveMunmapReplacement(MallocHook_MunmapReplacement hook) {
+  return 0;
+}
+
+extern "C"
+int MallocHook_AddMremapHook(MallocHook_MremapHook hook) {
+  return 0;
+}
+
+extern "C"
+int MallocHook_RemoveMremapHook(MallocHook_MremapHook hook) {
+  return 0;
+}
+
+extern "C"
+int MallocHook_AddPreSbrkHook(MallocHook_PreSbrkHook hook) {
+  return 0;
+}
+
+extern "C"
+int MallocHook_RemovePreSbrkHook(MallocHook_PreSbrkHook hook) {
+  return 0;
+}
+
+extern "C"
+int MallocHook_AddSbrkHook(MallocHook_SbrkHook hook) {
+  return 0;
+}
+
+extern "C"
+int MallocHook_RemoveSbrkHook(MallocHook_SbrkHook hook) {
+  return 0;
+}
 
 /*static*/void* MallocHook::UnhookedMMap(void *start, size_t length, int prot,
                                          int flags, int fd, off_t offset) {
-  void* result;
-  if (!MallocHook::InvokeMmapReplacement(
-          start, length, prot, flags, fd, offset, &result)) {
-    result = mmap(start, length, prot, flags, fd, offset);
-  }
-  return result;
+  errno = ENOSYS;
+  return MAP_FAILED;
 }
 
 /*static*/int MallocHook::UnhookedMUnmap(void *start, size_t length) {
-  int result;
-  if (!MallocHook::InvokeMunmapReplacement(start, length, &result)) {
-    result = munmap(start, length);
-  }
-  return result;
+  errno = ENOSYS;
+  return -1;
 }
 
-#endif
+extern "C"
+MallocHook_PreMmapHook MallocHook_SetPreMmapHook(MallocHook_PreMmapHook hook) {
+  return 0;
+}
+
+extern "C"
+MallocHook_MmapHook MallocHook_SetMmapHook(MallocHook_MmapHook hook) {
+  return 0;
+}
+
+extern "C"
+MallocHook_MunmapHook MallocHook_SetMunmapHook(MallocHook_MunmapHook hook) {
+  return 0;
+}
+
+extern "C"
+MallocHook_MremapHook MallocHook_SetMremapHook(MallocHook_MremapHook hook) {
+  return 0;
+}
+
+extern "C"
+MallocHook_PreSbrkHook MallocHook_SetPreSbrkHook(MallocHook_PreSbrkHook hook) {
+  return 0;
+}
+
+extern "C"
+MallocHook_SbrkHook MallocHook_SetSbrkHook(MallocHook_SbrkHook hook) {
+  return 0;
+}
+
+void MallocHook::InvokePreMmapHookSlow(const void* start,
+                                       size_t size,
+                                       int protection,
+                                       int flags,
+                                       int fd,
+                                       off_t offset) {
+}
+
+void MallocHook::InvokeMmapHookSlow(const void* result,
+                                    const void* start,
+                                    size_t size,
+                                    int protection,
+                                    int flags,
+                                    int fd,
+                                    off_t offset) {
+}
+
+bool MallocHook::InvokeMmapReplacementSlow(const void* start,
+                                           size_t size,
+                                           int protection,
+                                           int flags,
+                                           int fd,
+                                           off_t offset,
+                                           void** result) {
+  return false;
+}
+
+void MallocHook::InvokeMunmapHookSlow(const void* p, size_t s) {
+}
+
+bool MallocHook::InvokeMunmapReplacementSlow(const void* p,
+                                             size_t s,
+                                             int* result) {
+  return false;
+}
+
+void MallocHook::InvokeMremapHookSlow(const void* result,
+                                      const void* old_addr,
+                                      size_t old_size,
+                                      size_t new_size,
+                                      int flags,
+                                      const void* new_addr) {
+}
+
+void MallocHook::InvokePreSbrkHookSlow(ptrdiff_t increment) {
+}
+
+void MallocHook::InvokeSbrkHookSlow(const void* result, ptrdiff_t increment) {
+}
+

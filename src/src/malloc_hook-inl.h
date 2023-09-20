@@ -40,7 +40,9 @@
 
 #include <stddef.h>
 #include <sys/types.h>
-#include "base/atomicops.h"
+
+#include <atomic>
+
 #include "base/basictypes.h"
 #include <gperftools/malloc_hook.h>
 
@@ -59,7 +61,10 @@ static const int kHookListSingularIdx = 7;
 // lockless traversal.  Most of the implementation is in malloc_hook.cc.
 template <typename T>
 struct PERFTOOLS_DLL_DECL HookList {
-  COMPILE_ASSERT(sizeof(T) <= sizeof(AtomicWord), T_should_fit_in_AtomicWord);
+  static_assert(sizeof(T) <= sizeof(uintptr_t), "must fit in uintptr_t");
+
+  constexpr HookList() = default;
+  explicit constexpr HookList(T priv_data_initial) : priv_end{1}, priv_data{priv_data_initial} {}
 
   // Adds value to the list.  Note that duplicates are allowed.  Thread-safe and
   // blocking (acquires hooklist_spinlock).  Returns true on success; false
@@ -80,13 +85,12 @@ struct PERFTOOLS_DLL_DECL HookList {
 
   // Fast inline implementation for fast path of Invoke*Hook.
   bool empty() const {
-    return base::subtle::NoBarrier_Load(&priv_end) == 0;
+    return priv_end.load(std::memory_order_relaxed) == 0;
   }
 
   // Used purely to handle deprecated singular hooks
   T GetSingular() const {
-    const AtomicWord *place = &priv_data[kHookListSingularIdx];
-    return bit_cast<T>(base::subtle::NoBarrier_Load(place));
+    return bit_cast<T>(cast_priv_data(kHookListSingularIdx)->load(std::memory_order_relaxed));
   }
 
   T ExchangeSingular(T new_val);
@@ -100,20 +104,22 @@ struct PERFTOOLS_DLL_DECL HookList {
   // subsequent values will be 0.
   //
   // Index kHookListCapacity-1 is reserved as 'deprecated' single hook pointer
-  AtomicWord priv_end;
-  AtomicWord priv_data[kHookListCapacity];
+  std::atomic<uintptr_t> priv_end;
+  T priv_data[kHookListCapacity];
+
+  // C++ 11 doesn't let us initialize array of atomics, so we made
+  // priv_data regular array of T and cast when reading and writing
+  // (which is portable in practice)
+  std::atomic<T>* cast_priv_data(int index) {
+    return reinterpret_cast<std::atomic<T>*>(priv_data + index);
+  }
+  std::atomic<T> const * cast_priv_data(int index) const {
+    return reinterpret_cast<std::atomic<T> const *>(priv_data + index);
+  }
 };
 
 ATTRIBUTE_VISIBILITY_HIDDEN extern HookList<MallocHook::NewHook> new_hooks_;
 ATTRIBUTE_VISIBILITY_HIDDEN extern HookList<MallocHook::DeleteHook> delete_hooks_;
-ATTRIBUTE_VISIBILITY_HIDDEN extern HookList<MallocHook::PreMmapHook> premmap_hooks_;
-ATTRIBUTE_VISIBILITY_HIDDEN extern HookList<MallocHook::MmapHook> mmap_hooks_;
-ATTRIBUTE_VISIBILITY_HIDDEN extern HookList<MallocHook::MmapReplacement> mmap_replacement_;
-ATTRIBUTE_VISIBILITY_HIDDEN extern HookList<MallocHook::MunmapHook> munmap_hooks_;
-ATTRIBUTE_VISIBILITY_HIDDEN extern HookList<MallocHook::MunmapReplacement> munmap_replacement_;
-ATTRIBUTE_VISIBILITY_HIDDEN extern HookList<MallocHook::MremapHook> mremap_hooks_;
-ATTRIBUTE_VISIBILITY_HIDDEN extern HookList<MallocHook::PreSbrkHook> presbrk_hooks_;
-ATTRIBUTE_VISIBILITY_HIDDEN extern HookList<MallocHook::SbrkHook> sbrk_hooks_;
 
 } }  // namespace base::internal
 
@@ -136,113 +142,6 @@ inline MallocHook::DeleteHook MallocHook::GetDeleteHook() {
 inline void MallocHook::InvokeDeleteHook(const void* p) {
   if (PREDICT_FALSE(!base::internal::delete_hooks_.empty())) {
     InvokeDeleteHookSlow(p);
-  }
-}
-
-// The following method is DEPRECATED
-inline MallocHook::PreMmapHook MallocHook::GetPreMmapHook() {
-  return base::internal::premmap_hooks_.GetSingular();
-}
-
-inline void MallocHook::InvokePreMmapHook(const void* start,
-                                          size_t size,
-                                          int protection,
-                                          int flags,
-                                          int fd,
-                                          off_t offset) {
-  if (!base::internal::premmap_hooks_.empty()) {
-    InvokePreMmapHookSlow(start, size, protection, flags, fd, offset);
-  }
-}
-
-// The following method is DEPRECATED
-inline MallocHook::MmapHook MallocHook::GetMmapHook() {
-  return base::internal::mmap_hooks_.GetSingular();
-}
-
-inline void MallocHook::InvokeMmapHook(const void* result,
-                                       const void* start,
-                                       size_t size,
-                                       int protection,
-                                       int flags,
-                                       int fd,
-                                       off_t offset) {
-  if (!base::internal::mmap_hooks_.empty()) {
-    InvokeMmapHookSlow(result, start, size, protection, flags, fd, offset);
-  }
-}
-
-inline bool MallocHook::InvokeMmapReplacement(const void* start,
-                                              size_t size,
-                                              int protection,
-                                              int flags,
-                                              int fd,
-                                              off_t offset,
-                                              void** result) {
-  if (!base::internal::mmap_replacement_.empty()) {
-    return InvokeMmapReplacementSlow(start, size,
-                                     protection, flags,
-                                     fd, offset,
-                                     result);
-  }
-  return false;
-}
-
-// The following method is DEPRECATED
-inline MallocHook::MunmapHook MallocHook::GetMunmapHook() {
-  return base::internal::munmap_hooks_.GetSingular();
-}
-
-inline void MallocHook::InvokeMunmapHook(const void* p, size_t size) {
-  if (!base::internal::munmap_hooks_.empty()) {
-    InvokeMunmapHookSlow(p, size);
-  }
-}
-
-inline bool MallocHook::InvokeMunmapReplacement(
-    const void* p, size_t size, int* result) {
-  if (!base::internal::mmap_replacement_.empty()) {
-    return InvokeMunmapReplacementSlow(p, size, result);
-  }
-  return false;
-}
-
-// The following method is DEPRECATED
-inline MallocHook::MremapHook MallocHook::GetMremapHook() {
-  return base::internal::mremap_hooks_.GetSingular();
-}
-
-inline void MallocHook::InvokeMremapHook(const void* result,
-                                         const void* old_addr,
-                                         size_t old_size,
-                                         size_t new_size,
-                                         int flags,
-                                         const void* new_addr) {
-  if (!base::internal::mremap_hooks_.empty()) {
-    InvokeMremapHookSlow(result, old_addr, old_size, new_size, flags, new_addr);
-  }
-}
-
-// The following method is DEPRECATED
-inline MallocHook::PreSbrkHook MallocHook::GetPreSbrkHook() {
-  return base::internal::presbrk_hooks_.GetSingular();
-}
-
-inline void MallocHook::InvokePreSbrkHook(ptrdiff_t increment) {
-  if (!base::internal::presbrk_hooks_.empty() && increment != 0) {
-    InvokePreSbrkHookSlow(increment);
-  }
-}
-
-// The following method is DEPRECATED
-inline MallocHook::SbrkHook MallocHook::GetSbrkHook() {
-  return base::internal::sbrk_hooks_.GetSingular();
-}
-
-inline void MallocHook::InvokeSbrkHook(const void* result,
-                                       ptrdiff_t increment) {
-  if (!base::internal::sbrk_hooks_.empty() && increment != 0) {
-    InvokeSbrkHookSlow(result, increment);
   }
 }
 

@@ -33,6 +33,13 @@
 # define PLATFORM_WINDOWS 1
 #endif
 
+#include "base/sysinfo.h"
+#include "base/commandlineflags.h"
+#include "base/dynamic_annotations.h"   // for RunningOnValgrind
+#include "base/logging.h"
+
+#include <tuple>
+
 #include <ctype.h>    // for isspace()
 #include <stdlib.h>   // for getenv()
 #include <stdio.h>    // for snprintf(), sscanf()
@@ -56,10 +63,6 @@
 #include <shlwapi.h>          // for SHGetValueA()
 #include <tlhelp32.h>         // for Module32First()
 #endif
-#include "base/sysinfo.h"
-#include "base/commandlineflags.h"
-#include "base/dynamic_annotations.h"   // for RunningOnValgrind
-#include "base/logging.h"
 
 #ifdef PLATFORM_WINDOWS
 #ifdef MODULEENTRY32
@@ -85,7 +88,7 @@
 
 // open/read/close can set errno, which may be illegal at this
 // time, so prefer making the syscalls directly if we can.
-#ifdef HAVE_SYS_SYSCALL_H
+#if HAVE_SYS_SYSCALL_H
 # include <sys/syscall.h>
 #endif
 #ifdef SYS_open   // solaris 11, at least sometimes, only defines SYS_openat
@@ -206,6 +209,56 @@ extern "C" {
   }
 }
 
+// HPC environment auto-detection
+// For HPC applications (MPI, OpenSHMEM, etc), it is typical for multiple
+// processes not engaged in parent-child relations to be executed on the
+// same host.
+// In order to enable gperftools to analyze them, these processes need to be
+// assigned individual file paths for the files being used.
+// The function below is trying to discover well-known HPC environments and
+// take advantage of that environment to generate meaningful profile filenames
+//
+// Returns true iff we need to append process pid to
+// GetUniquePathFromEnv value. Second and third return values are
+// strings to be appended to path for extra identification.
+static std::tuple<bool, const char*, const char*> QueryHPCEnvironment() {
+  // Check for the PMIx environment
+  char* envval = getenv("PMIX_RANK");
+  if (envval != nullptr && *envval != 0) {
+    // PMIx exposes the rank that is convenient for process identification
+    // Don't append pid, since we have rank to differentiate.
+    return {false, ".rank-", envval};
+  }
+
+  // Check for the Slurm environment
+  envval = getenv("SLURM_JOB_ID");
+  if (envval != nullptr && *envval != 0) {
+    // Slurm environment detected
+    char* procid = getenv("SLURM_PROCID");
+    if (procid != nullptr && *procid != 0) {
+      // Use Slurm process ID to differentiate
+      return {false, ".slurmid-", procid};
+    }
+    // Need to add PID to avoid conflicts
+    return {true, "", ""};
+  }
+
+  // Check for Open MPI environment
+  envval = getenv("OMPI_HOME");
+  if (envval != nullptr && *envval != 0) {
+    return {true, "", ""};
+  }
+
+  // Check for Hydra process manager (MPICH)
+  envval = getenv("PMI_RANK");
+  if (envval != nullptr && *envval != 0) {
+    return {false, ".rank-", envval};
+  }
+
+  // No HPC environment was detected
+  return {false, "", ""};
+}
+
 // This takes as an argument an environment-variable name (like
 // CPUPROFILE) whose value is supposed to be a file-path, and sets
 // path to that path, and returns true.  If the env var doesn't exist,
@@ -230,14 +283,38 @@ extern "C" {
 // TODO(csilvers): set an envvar instead when we can do it reliably.
 bool GetUniquePathFromEnv(const char* env_name, char* path) {
   char* envval = getenv(env_name);
-  if (envval == NULL || *envval == '\0')
+
+  if (envval == nullptr || *envval == '\0') {
     return false;
-  if (envval[0] & 128) {                  // high bit is set
-    snprintf(path, PATH_MAX, "%c%s_%u",   // add pid and clear high bit
-             envval[0] & 127, envval+1, (unsigned int)(getpid()));
+  }
+
+  const char* append1 = "";
+  const char* append2 = "";
+  bool pidIsForced;
+  std::tie(pidIsForced, append1, append2) = QueryHPCEnvironment();
+
+  // Generate the "forcing" environment variable name in a form of
+  // <ORIG_ENVAR>_USE_PID that requests PID to be used in the file names
+  char forceVarName[256];
+  snprintf(forceVarName, sizeof(forceVarName), "%s_USE_PID", env_name);
+
+  pidIsForced = pidIsForced || EnvToBool(forceVarName, false);
+
+  // Get information about the child bit and drop it
+  const bool childBitDetected = (*envval & 128) != 0;
+  *envval &= ~128;
+
+  if (pidIsForced || childBitDetected) {
+    snprintf(path, PATH_MAX, "%s%s%s_%d",
+             envval, append1, append2, getpid());
   } else {
-    snprintf(path, PATH_MAX, "%s", envval);
-    envval[0] |= 128;                     // set high bit for kids to see
+    snprintf(path, PATH_MAX, "%s%s%s", envval, append1, append2);
+  }
+
+  // Set the child bit for the fork'd processes, unless appending pid
+  // was forced by either _USE_PID thingy or via MPI detection stuff.
+  if (childBitDetected || !pidIsForced) {
+    *envval |= 128;
   }
   return true;
 }
@@ -260,7 +337,7 @@ int GetSystemCPUsCount()
 
 // ----------------------------------------------------------------------
 
-#if defined __linux__ || defined __FreeBSD__ || defined __sun__ || defined __CYGWIN__ || defined __CYGWIN32__
+#if defined __linux__ || defined __FreeBSD__ || defined __NetBSD__ || defined __sun__ || defined __CYGWIN__ || defined __CYGWIN32__
 static void ConstructFilename(const char* spec, pid_t pid,
                               char* buf, int buf_size) {
   CHECK_LT(snprintf(buf, buf_size,
@@ -412,7 +489,7 @@ static bool ParseProcMapsLine(char *text, uint64 *start, uint64 *end,
                               char *flags, uint64 *offset,
                               int *major, int *minor, int64 *inode,
                               unsigned *filename_offset) {
-#if defined(__linux__)
+#if defined(__linux__) || defined(__NetBSD__)
   /*
    * It's similar to:
    * sscanf(text, "%"SCNx64"-%"SCNx64" %4s %"SCNx64" %x:%x %"SCNd64" %n",
@@ -483,7 +560,7 @@ void ProcMapsIterator::Init(pid_t pid, Buffer *buffer,
   ebuf_ = ibuf_ + Buffer::kBufSize - 1;
   nextline_ = ibuf_;
 
-#if defined(__linux__) || defined(__CYGWIN__) || defined(__CYGWIN32__)
+#if defined(__linux__) || defined(__NetBSD__) || defined(__CYGWIN__) || defined(__CYGWIN32__)
   if (use_maps_backing) {  // don't bother with clever "self" stuff in this case
     ConstructFilename("/proc/%d/maps_backing", pid, ibuf_, Buffer::kBufSize);
   } else if (pid == 0) {
@@ -532,7 +609,7 @@ ProcMapsIterator::~ProcMapsIterator() {
 #elif defined(__MACH__)
   // no cleanup necessary!
 #else
-  if (fd_ >= 0) NO_INTR(close(fd_));
+  if (fd_ >= 0) close(fd_);
 #endif
   delete dynamic_buffer_;
 }
@@ -562,7 +639,7 @@ bool ProcMapsIterator::NextExt(uint64 *start, uint64 *end, char **flags,
                                uint64 *anon_mapping, uint64 *anon_pages,
                                dev_t *dev) {
 
-#if defined(__linux__) || defined(__FreeBSD__) || defined(__CYGWIN__) || defined(__CYGWIN32__)
+#if defined(__linux__) || defined(__NetBSD__) || defined(__FreeBSD__) || defined(__CYGWIN__) || defined(__CYGWIN32__)
   do {
     // Advance to the start of the next line
     stext_ = nextline_;
@@ -602,7 +679,7 @@ bool ProcMapsIterator::NextExt(uint64 *start, uint64 *end, char **flags,
     int64 tmpinode;
     int major, minor;
     unsigned filename_offset = 0;
-#if defined(__linux__)
+#if defined(__linux__) || defined(__NetBSD__)
     // for now, assume all linuxes have the same format
     if (!ParseProcMapsLine(
         stext_,

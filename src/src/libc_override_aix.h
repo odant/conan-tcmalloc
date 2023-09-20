@@ -1,5 +1,5 @@
 // -*- Mode: C++; c-basic-offset: 2; indent-tabs-mode: nil -*-
-// Copyright (c) 2005, Google Inc.
+// Copyright (c) 2021, IBM Ltd.
 // All rights reserved.
 //
 // Redistribution and use in source and binary forms, with or without
@@ -29,33 +29,31 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 // ---
-// Author: Paul Menage <opensource@google.com>
+// Author: Chris Cambly <ccambly@ca.ibm.com>
+//
+// Used to override malloc routines on AIX
 
-//-------------------------------------------------------------------
-// Some wrappers for pthread functions so that we can be LD_PRELOADed
-// against non-pthreads apps.
-//-------------------------------------------------------------------
+#ifndef TCMALLOC_LIBC_OVERRIDE_AIX_INL_H_
+#define TCMALLOC_LIBC_OVERRIDE_AIX_INL_H_
 
-#ifndef GOOGLE_MAYBE_THREADS_H_
-#define GOOGLE_MAYBE_THREADS_H_
-
-#ifdef HAVE_PTHREAD
-#include <pthread.h>
+#ifndef _AIX
+# error libc_override_aix.h is for AIX systems only.
 #endif
 
-int perftools_pthread_key_create(pthread_key_t *key,
-                                 void (*destr_function) (void *));
-int perftools_pthread_key_delete(pthread_key_t key);
-void *perftools_pthread_getspecific(pthread_key_t key);
-int perftools_pthread_setspecific(pthread_key_t key, void *val);
-int perftools_pthread_once(pthread_once_t *ctl,
-                           void  (*init_routine) (void));
+extern "C" {
+  // AIX user-defined malloc replacement routines
+  void* __malloc__(size_t size) __THROW               ALIAS(tc_malloc);
+  void __free__(void* ptr) __THROW                    ALIAS(tc_free);
+  void* __realloc__(void* ptr, size_t size) __THROW   ALIAS(tc_realloc);
+  void* __calloc__(size_t n, size_t size) __THROW     ALIAS(tc_calloc);
+  int __posix_memalign__(void** r, size_t a, size_t s) __THROW ALIAS(tc_posix_memalign);
+  int __mallopt__(int cmd, int value) __THROW         ALIAS(tc_mallopt);
+#ifdef HAVE_STRUCT_MALLINFO
+  struct mallinfo __mallinfo__(void) __THROW          ALIAS(tc_mallinfo);
+#endif
+  void __malloc_init__(void)               { tc_free(tc_malloc(1));}
+  void* __malloc_prefork_lock__(void)      { /* nothing to lock */ }
+  void* __malloc_postfork_unlock__(void)   { /* nothing to unlock */}
+}   // extern "C"
 
-// Our wrapper for pthread_atfork. Does _nothing_ when there are no
-// threads. See static_vars.cc:SetupAtForkLocksHandler for only user
-// of this.
-void perftools_pthread_atfork(void (*before)(),
-                              void (*parent_after)(),
-                              void (*child_after)());
-
-#endif  /* GOOGLE_MAYBE_THREADS_H_ */
+#endif  // TCMALLOC_LIBC_OVERRIDE_AIX_INL_H_

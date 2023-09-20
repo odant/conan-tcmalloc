@@ -14,6 +14,12 @@
 #define GOOGLE_PERFTOOLS_WINDOWS_CONFIG_H_
 #endif
 
+// windows.h whatevevs defines min and max preprocessor macros and
+// that breaks ::max() in various places (like numeric_limits)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+
 #ifndef GOOGLE_PERFTOOLS_WINDOWS_CONFIG_H_
 #define GOOGLE_PERFTOOLS_WINDOWS_CONFIG_H_
 /* used by tcmalloc.h */
@@ -99,16 +105,8 @@
 /* Define to 1 if you have the <grp.h> header file. */
 /* #undef HAVE_GRP_H */
 
-/* Define to 1 if you have the <inttypes.h> header file. */
-#if defined(_MSC_VER) && _MSC_VER >= 1900
-#define HAVE_INTTYPES_H 1
-#endif
-
 /* Define to 1 if you have the <libunwind.h> header file. */
 /* #undef HAVE_LIBUNWIND_H */
-
-/* Define to 1 if you have the <linux/ptrace.h> header file. */
-/* #undef HAVE_LINUX_PTRACE_H */
 
 /* Define if this is Linux that has SIGEV_THREAD_ID */
 /* #undef HAVE_LINUX_SIGEV_THREAD_ID */
@@ -144,26 +142,11 @@
 /* Define to 1 if you have the <sched.h> header file. */
 /* #undef HAVE_SCHED_H */
 
-/* Define to 1 if you have the <stdint.h> header file. */
-#define HAVE_STDINT_H 1
-
-/* Define to 1 if you have the <stdlib.h> header file. */
-#define HAVE_STDLIB_H 1
-
-/* Define to 1 if you have the <strings.h> header file. */
-/* #undef HAVE_STRINGS_H */
-
-/* Define to 1 if you have the <string.h> header file. */
-#define HAVE_STRING_H 1
-
 /* Define to 1 if the system has the type `struct mallinfo'. */
 /* #undef HAVE_STRUCT_MALLINFO */
 
 /* Define to 1 if you have the <sys/cdefs.h> header file. */
 /* #undef HAVE_SYS_CDEFS_H */
-
-/* Define to 1 if you have the <sys/prctl.h> header file. */
-/* #undef HAVE_SYS_PRCTL_H */
 
 /* Define to 1 if you have the <sys/resource.h> header file. */
 /* #undef HAVE_SYS_RESOURCE_H */
@@ -216,11 +199,6 @@
 /* prefix where we look for installed files */
 /* #undef INSTALL_PREFIX */
 
-/* Define to 1 if int32_t is equivalent to intptr_t */
-#ifndef _WIN64
-#define INT32_EQUALS_INTPTR 1
-#endif
-
 /* Define to the sub-directory where libtool stores uninstalled libraries. */
 /* #undef LT_OBJDIR */
 
@@ -234,7 +212,7 @@
 #define PACKAGE_NAME "gperftools"
 
 /* Define to the full name and version of this package. */
-#define PACKAGE_STRING "gperftools 2.10"
+#define PACKAGE_STRING "gperftools 2.13"
 
 /* Define to the one symbol short name of this package. */
 #define PACKAGE_TARNAME "gperftools"
@@ -243,7 +221,7 @@
 #define PACKAGE_URL ""
 
 /* Define to the version of this package. */
-#define PACKAGE_VERSION "2.10"
+#define PACKAGE_VERSION "2.13"
 
 /* How to access the PC from a struct ucontext */
 /* #undef PC_FROM_UCONTEXT */
@@ -265,21 +243,11 @@
 #define PTHREADS_CRASHES_IF_RUN_TOO_EARLY 1
 #endif
 
-/* Define to necessary symbol if this constant uses a non-standard name on
-   your system. */
-/* #undef PTHREAD_CREATE_JOINABLE */
-
-/* Define to 1 if you have the ANSI C header files. */
-#define STDC_HEADERS 1
-
 /* Define 8 bytes of allocation alignment for tcmalloc */
 /* #undef TCMALLOC_ALIGN_8BYTES */
 
 /* Define internal page size for tcmalloc as number of left bitshift */
 /* #undef TCMALLOC_PAGE_SIZE_SHIFT */
-
-/* Version number of package */
-#define VERSION "2.9.1"
 
 /* C99 says: define this to get the PRI... macros from stdint.h */
 #ifndef __STDC_FORMAT_MACROS

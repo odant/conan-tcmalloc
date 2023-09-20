@@ -39,14 +39,11 @@
 #include <pthread.h>                    // for pthread_t, pthread_key_t
 #endif
 #include <stddef.h>                     // for size_t, NULL
-#ifdef HAVE_STDINT_H
 #include <stdint.h>                     // for uint32_t, uint64_t
-#endif
 #include <sys/types.h>                  // for ssize_t
 #include "base/commandlineflags.h"
 #include "common.h"
 #include "linked_list.h"
-#include "maybe_threads.h"
 #include "page_heap_allocator.h"
 #include "sampler.h"
 #include "static_vars.h"
@@ -59,6 +56,12 @@
 #include "static_vars.h"       // for Static
 
 DECLARE_int64(tcmalloc_sample_parameter);
+
+#ifndef HAVE_PERFTOOLS_PTHREAD_KEYS
+#define perftools_pthread_getspecific pthread_getspecific
+#define perftools_pthread_setspecific pthread_setspecific
+#define perftools_pthread_key_create pthread_key_create
+#endif
 
 namespace tcmalloc {
 
@@ -104,10 +107,8 @@ class ThreadCache {
   static ThreadCache* GetCache();
   static ThreadCache* GetCacheIfPresent();
   static ThreadCache* GetFastPathCache();
-  static ThreadCache* GetCacheWhichMustBePresent();
   static ThreadCache* CreateCacheIfNecessary();
   static void         BecomeIdle();
-  static void         BecomeTemporarilyIdle();
   static void         SetUseEmergencyMalloc();
   static void         ResetUseEmergencyMalloc();
   static bool         IsUseEmergencyMalloc();
@@ -409,17 +410,6 @@ inline ThreadCache* ThreadCache::GetThreadHeap() {
 #ifdef HAVE_TLS
   return threadlocal_data_.heap;
 #else
-  return reinterpret_cast<ThreadCache *>(
-      perftools_pthread_getspecific(heap_key_));
-#endif
-}
-
-inline ThreadCache* ThreadCache::GetCacheWhichMustBePresent() {
-#ifdef HAVE_TLS
-  ASSERT(threadlocal_data_.heap);
-  return threadlocal_data_.heap;
-#else
-  ASSERT(perftools_pthread_getspecific(heap_key_));
   return reinterpret_cast<ThreadCache *>(
       perftools_pthread_getspecific(heap_key_));
 #endif

@@ -35,13 +35,7 @@
 #include <assert.h>
 #include <string.h>
 #include <stdio.h>
-#if defined HAVE_STDINT_H
 #include <stdint.h>
-#elif defined HAVE_INTTYPES_H
-#include <inttypes.h>
-#else
-#include <sys/types.h>
-#endif
 #include <string>
 #include "base/dynamic_annotations.h"
 #include "base/sysinfo.h"    // for FillProcSelfMaps
@@ -50,7 +44,6 @@
 #endif
 #include "gperftools/malloc_extension.h"
 #include "gperftools/malloc_extension_c.h"
-#include "maybe_threads.h"
 #include "base/googleinit.h"
 
 using std::string;

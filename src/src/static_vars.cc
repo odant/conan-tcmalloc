@@ -43,7 +43,6 @@
 #include "sampler.h"           // for Sampler
 #include "getenv_safe.h"       // TCMallocGetenvSafe
 #include "base/googleinit.h"
-#include "maybe_threads.h"
 
 namespace tcmalloc {
 
@@ -68,13 +67,12 @@ void CentralCacheUnlockAll() NO_THREAD_SAFETY_ANALYSIS
 #endif
 
 bool Static::inited_;
-SpinLock Static::pageheap_lock_(SpinLock::LINKER_INITIALIZED);
 SizeMap Static::sizemap_;
 CentralFreeListPadded Static::central_cache_[kClassSizesMax];
 PageHeapAllocator<Span> Static::span_allocator_;
 PageHeapAllocator<StackTrace> Static::stacktrace_allocator_;
 Span Static::sampled_objects_;
-StackTrace* Static::growth_stacks_ = NULL;
+std::atomic<StackTrace*> Static::growth_stacks_;
 Static::PageHeapStorage Static::pageheap_;
 
 void Static::InitStaticVars() {
@@ -89,7 +87,7 @@ void Static::InitStaticVars() {
     central_cache_[i].Init(i);
   }
 
-  new (&pageheap_.memory) PageHeap;
+  new (&pageheap_.memory) PageHeap(sizemap_.min_span_size_in_pages());
 
 #if defined(ENABLE_AGGRESSIVE_DECOMMIT_BY_DEFAULT)
   const bool kDefaultAggressiveDecommit = true;
@@ -112,7 +110,8 @@ void Static::InitStaticVars() {
 
 void Static::InitLateMaybeRecursive() {
 #if defined(HAVE_FORK) && defined(HAVE_PTHREAD) \
-  && !defined(__APPLE__) && !defined(TCMALLOC_NO_ATFORK)
+  && !defined(__APPLE__) && !defined(TCMALLOC_NO_ATFORK) \
+  && !defined(PTHREADS_CRASHES_IF_RUN_TOO_EARLY)
   // OSX has it's own way of handling atfork in malloc (see
   // libc_override_osx.h).
   //
@@ -136,16 +135,10 @@ void Static::InitLateMaybeRecursive() {
   // be less fortunate and allow some early app constructors to run
   // before malloc is ever called.
 
-  perftools_pthread_atfork(
+  pthread_atfork(
     CentralCacheLockAll,    // parent calls before fork
     CentralCacheUnlockAll,  // parent calls after fork
     CentralCacheUnlockAll); // child calls after fork
-#endif
-
-#ifndef NDEBUG
-  // pthread_atfork above may malloc sometimes. Lets ensure we test
-  // that malloc works from here.
-  free(malloc(1));
 #endif
 }
 

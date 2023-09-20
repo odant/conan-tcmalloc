@@ -47,22 +47,19 @@
 #include <string>
 
 #if HAVE_LINUX_SIGEV_THREAD_ID
+#include <pthread.h>
 // for timer_{create,settime} and associated typedefs & constants
 #include <time.h>
 // for sigevent
 #include <signal.h>
 // for SYS_gettid
 #include <sys/syscall.h>
-
-// for perftools_pthread_key_create
-#include "maybe_threads.h"
 #endif
 
 #include "base/dynamic_annotations.h"
 #include "base/googleinit.h"
 #include "base/logging.h"
 #include "base/spinlock.h"
-#include "maybe_threads.h"
 
 // Some Linux systems don't have sigev_notify_thread_id defined in
 // signal.h (despite having SIGEV_THREAD_ID defined) and also lack
@@ -152,9 +149,6 @@ class ProfileHandler {
   // ProfileHandler singleton.
   static ProfileHandler* instance_;
 
-  // pthread_once_t for one time initialization of ProfileHandler singleton.
-  static pthread_once_t once_;
-
   // Initializes the ProfileHandler singleton via GoogleOnceInit.
   static void Init();
 
@@ -184,7 +178,7 @@ class ProfileHandler {
   // Must be false if HAVE_LINUX_SIGEV_THREAD_ID is not defined.
   bool per_thread_timer_enabled_;
 
-#ifdef HAVE_LINUX_SIGEV_THREAD_ID
+#if HAVE_LINUX_SIGEV_THREAD_ID
   // this is used to destroy per-thread profiling timers on thread
   // termination
   pthread_key_t thread_timer_key;
@@ -207,6 +201,8 @@ class ProfileHandler {
   //  - Acquire control_lock_
   //  - Disable SIGPROF handler.
   //  - Acquire signal_lock_
+  //  - Nothing that takes ~any other lock can be nested
+  //    here. E.g. including malloc. Otherwise deadlock is possible.
   // For read-only access in the context of SIGPROF handler
   // (Read-write access is *not allowed* in the SIGPROF handler)
   //  - Acquire signal_lock_
@@ -219,7 +215,7 @@ class ProfileHandler {
   // Starts or stops the interval timer.
   // Will ignore any requests to enable or disable when
   // per_thread_timer_enabled_ is true.
-  void UpdateTimer(bool enable) EXCLUSIVE_LOCKS_REQUIRED(signal_lock_);
+  void UpdateTimer(bool enable) EXCLUSIVE_LOCKS_REQUIRED(control_lock_);
 
   // Returns true if the handler is not being used by something else.
   // This checks the kernel's signal handler table.
@@ -232,7 +228,6 @@ class ProfileHandler {
 };
 
 ProfileHandler* ProfileHandler::instance_ = NULL;
-pthread_once_t ProfileHandler::once_ = PTHREAD_ONCE_INIT;
 
 const int32 ProfileHandler::kMaxFrequency;
 const int32 ProfileHandler::kDefaultFrequency;
@@ -242,9 +237,6 @@ const int32 ProfileHandler::kDefaultFrequency;
 // which will cause the non-definition to resolve to NULL.  We can then check
 // for NULL or not in Instance.
 extern "C" {
-int pthread_once(pthread_once_t *, void (*)(void)) ATTRIBUTE_WEAK;
-int pthread_kill(pthread_t thread_id, int signo) ATTRIBUTE_WEAK;
-
 #if HAVE_LINUX_SIGEV_THREAD_ID
 int timer_create(clockid_t clockid, struct sigevent* evp,
                  timer_t* timerid) ATTRIBUTE_WEAK;
@@ -273,7 +265,7 @@ extern "C" {
 }
 
 static void CreateThreadTimerKey(pthread_key_t *pkey) {
-  int rv = perftools_pthread_key_create(pkey, ThreadTimerDestructor);
+  int rv = pthread_key_create(pkey, ThreadTimerDestructor);
   if (rv) {
     RAW_LOG(FATAL, "aborting due to pthread_key_create error: %s", strerror(rv));
   }
@@ -299,7 +291,7 @@ static void StartLinuxThreadTimer(int timer_type, int signal_number,
   }
 
   timer_id_holder *holder = new timer_id_holder(timerid);
-  rv = perftools_pthread_setspecific(timer_key, holder);
+  rv = pthread_setspecific(timer_key, holder);
   if (rv) {
     RAW_LOG(FATAL, "aborting due to pthread_setspecific error: %s", strerror(rv));
   }
@@ -318,17 +310,14 @@ void ProfileHandler::Init() {
   instance_ = new ProfileHandler();
 }
 
+
 ProfileHandler* ProfileHandler::Instance() {
-  if (pthread_once) {
-    pthread_once(&once_, Init);
-  }
-  if (instance_ == NULL) {
-    // This will be true on systems that don't link in pthreads,
-    // including on FreeBSD where pthread_once has a non-zero address
-    // (but doesn't do anything) even when pthreads isn't linked in.
-    Init();
-    assert(instance_ != NULL);
-  }
+  static tcmalloc::TrivialOnce once;
+
+  once.RunOnce(&Init);
+
+  assert(instance_ != nullptr);
+
   return instance_;
 }
 
@@ -365,7 +354,7 @@ ProfileHandler::ProfileHandler()
   const char *signal_number = getenv("CPUPROFILE_TIMER_SIGNAL");
 
   if (per_thread || signal_number) {
-    if (timer_create && pthread_once) {
+    if (timer_create) {
       CreateThreadTimerKey(&thread_timer_key);
       per_thread_timer_enabled_ = true;
       // Override signal number if requested.
@@ -400,9 +389,9 @@ ProfileHandler::ProfileHandler()
 
 ProfileHandler::~ProfileHandler() {
   Reset();
-#ifdef HAVE_LINUX_SIGEV_THREAD_ID
+#if HAVE_LINUX_SIGEV_THREAD_ID
   if (per_thread_timer_enabled_) {
-    perftools_pthread_key_delete(thread_timer_key);
+    pthread_key_delete(thread_timer_key);
   }
 #endif
 }
@@ -415,8 +404,6 @@ void ProfileHandler::RegisterThread() {
   }
 
   // Record the thread identifier and start the timer if profiling is on.
-  ScopedSignalBlocker block(signal_number_);
-  SpinLockHolder sl(&signal_lock_);
 #if HAVE_LINUX_SIGEV_THREAD_ID
   if (per_thread_timer_enabled_) {
     StartLinuxThreadTimer(timer_type_, signal_number_, frequency_,
@@ -431,55 +418,73 @@ ProfileHandlerToken* ProfileHandler::RegisterCallback(
     ProfileHandlerCallback callback, void* callback_arg) {
 
   ProfileHandlerToken* token = new ProfileHandlerToken(callback, callback_arg);
+  CallbackList copy;
+  copy.push_back(token);
 
   SpinLockHolder cl(&control_lock_);
   {
     ScopedSignalBlocker block(signal_number_);
     SpinLockHolder sl(&signal_lock_);
-    callbacks_.push_back(token);
-    ++callback_count_;
-    UpdateTimer(true);
+    callbacks_.splice(callbacks_.end(), copy);
   }
+
+  ++callback_count_;
+  UpdateTimer(true);
   return token;
 }
 
 void ProfileHandler::UnregisterCallback(ProfileHandlerToken* token) {
   SpinLockHolder cl(&control_lock_);
-  for (CallbackIterator it = callbacks_.begin(); it != callbacks_.end();
-       ++it) {
-    if ((*it) == token) {
-      RAW_CHECK(callback_count_ > 0, "Invalid callback count");
-      {
-        ScopedSignalBlocker block(signal_number_);
-        SpinLockHolder sl(&signal_lock_);
-        delete *it;
-        callbacks_.erase(it);
-        --callback_count_;
-        if (callback_count_ == 0)
-          UpdateTimer(false);
-      }
-      return;
+  RAW_CHECK(callback_count_ > 0, "Invalid callback count");
+
+  CallbackList copy;
+  bool found = false;
+  for (ProfileHandlerToken* callback_token : callbacks_) {
+    if (callback_token == token) {
+      found = true;
+    } else {
+      copy.push_back(callback_token);
     }
   }
-  // Unknown token.
-  RAW_LOG(FATAL, "Invalid token");
+
+  if (!found) {
+    RAW_LOG(FATAL, "Invalid token");
+  }
+
+  {
+    ScopedSignalBlocker block(signal_number_);
+    SpinLockHolder sl(&signal_lock_);
+    // Replace callback list holding signal lock. We cannot call
+    // pretty much anything that takes locks. Including malloc
+    // locks. So we only swap here and cleanup later.
+    using std::swap;
+    swap(copy, callbacks_);
+  }
+  // copy gets deleted after signal_lock_ is dropped
+
+  --callback_count_;
+  if (callback_count_ == 0) {
+    UpdateTimer(false);
+  }
+  delete token;
 }
 
 void ProfileHandler::Reset() {
   SpinLockHolder cl(&control_lock_);
+  CallbackList copy;
   {
     ScopedSignalBlocker block(signal_number_);
     SpinLockHolder sl(&signal_lock_);
-    CallbackIterator it = callbacks_.begin();
-    while (it != callbacks_.end()) {
-      CallbackIterator tmp = it;
-      ++it;
-      delete *tmp;
-      callbacks_.erase(tmp);
-    }
-    callback_count_ = 0;
-    UpdateTimer(false);
+    // Only do swap under this critical lock.
+    using std::swap;
+    swap(copy, callbacks_);
   }
+  for (ProfileHandlerToken* token : copy) {
+    delete token;
+  }
+  callback_count_ = 0;
+  UpdateTimer(false);
+  // copy gets deleted here
 }
 
 void ProfileHandler::GetState(ProfileHandlerState* state) {

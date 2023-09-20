@@ -45,9 +45,7 @@
 # define GLOB_NOMATCH 0
 #endif
 #endif
-#ifdef HAVE_INTTYPES_H
 #include <inttypes.h> // for PRIxPTR
-#endif
 #ifdef HAVE_POLL_H
 #include <poll.h>
 #endif
@@ -288,7 +286,7 @@ int HeapProfileTable::UnparseBucket(const Bucket& b,
     profile_stats->free_size += b.free_size;
   }
   int printed =
-    snprintf(buf + buflen, bufsize - buflen, "%6d: %8" PRId64 " [%6d: %8" PRId64 "] @%s",
+    snprintf(buf + buflen, bufsize - buflen, "%6" PRId64 ": %8" PRId64 " [%6" PRId64 ": %8" PRId64 "] @%s",
              b.allocs - b.frees,
              b.alloc_size - b.free_size,
              b.allocs,
@@ -374,6 +372,7 @@ int HeapProfileTable::FillOrderedProfile(char buf[], int size) const {
   // Dump the mmap list first.
   if (profile_mmap_) {
     BufferArgs buffer(buf, bucket_length, size);
+    MemoryRegionMap::LockHolder holder{};
     MemoryRegionMap::IterateBuckets<BufferArgs*>(DumpBucketIterator, &buffer);
     bucket_length = buffer.buflen;
   }
@@ -499,25 +498,25 @@ void HeapProfileTable::AddToSnapshot(const void* ptr, AllocValue* v,
 
 HeapProfileTable::Snapshot* HeapProfileTable::NonLiveSnapshot(
     Snapshot* base) {
-  RAW_VLOG(2, "NonLiveSnapshot input: %d %d\n",
-           int(total_.allocs - total_.frees),
-           int(total_.alloc_size - total_.free_size));
+  RAW_VLOG(2, "NonLiveSnapshot input: %" PRId64 " %" PRId64 "\n",
+           total_.allocs - total_.frees,
+           total_.alloc_size - total_.free_size);
 
   Snapshot* s = new (alloc_(sizeof(Snapshot))) Snapshot(alloc_, dealloc_);
   AddNonLiveArgs args;
   args.dest = s;
   args.base = base;
   address_map_->Iterate<AddNonLiveArgs*>(AddIfNonLive, &args);
-  RAW_VLOG(2, "NonLiveSnapshot output: %d %d\n",
-           int(s->total_.allocs - s->total_.frees),
-           int(s->total_.alloc_size - s->total_.free_size));
+  RAW_VLOG(2, "NonLiveSnapshot output: %" PRId64 " %" PRId64 "\n",
+           s->total_.allocs - s->total_.frees,
+           s->total_.alloc_size - s->total_.free_size);
   return s;
 }
 
 // Information kept per unique bucket seen
 struct HeapProfileTable::Snapshot::Entry {
   int count;
-  int bytes;
+  size_t bytes;
   Bucket* bucket;
   Entry() : count(0), bytes(0) { }
 
@@ -592,7 +591,7 @@ void HeapProfileTable::Snapshot::ReportLeaks(const char* checker_name,
   for (int i = 0; i < to_report; i++) {
     const Entry& e = entries[i];
     base::RawPrinter printer(buffer, kBufSize);
-    printer.Printf("Leak of %d bytes in %d objects allocated from:\n",
+    printer.Printf("Leak of %zu bytes in %d objects allocated from:\n",
                    e.bytes, e.count);
     for (int j = 0; j < e.bucket->depth; j++) {
       const void* pc = e.bucket->stack[j];

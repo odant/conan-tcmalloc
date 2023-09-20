@@ -16,8 +16,6 @@
 /aclocal.m4
 /addressmap_unittest
 /addressmap_unittest.exe
-/atomicops_unittest
-/atomicops_unittest.exe
 /autom4te.cache/
 /benchmark/.deps
 /benchmark/.dirstamp
@@ -25,6 +23,7 @@
 /binary_trees.exe
 /binary_trees_shared
 /binary_trees_shared.exe
+/check_address_unittest
 /compile
 /config.guess
 /config.log
@@ -79,10 +78,10 @@
 /malloc_hook_test.exe
 /markidle_unittest
 /markidle_unittest.exe
-/maybe_threads_unittest.sh
 /memalign_debug_unittest
 /memalign_unittest
 /missing
+/mmap_hook_test
 /packed_cache_test
 /packed_cache_test.exe
 /page_heap_test
@@ -101,6 +100,8 @@
 /realloc_debug_unittest
 /realloc_unittest
 /realloc_unittest.exe
+/safe_strerror_test
+/safe_strerror_test.exe
 /sampler_debug_test
 /sampler_test
 /sampling_debug_test
@@ -146,3 +147,7 @@
 /test-driver
 /thread_dealloc_unittest
 /thread_dealloc_unittest.exe
+/unique_path_unittest
+/unique_path_unittest.exe
+/unwind_bench
+/unwind_bench.exe

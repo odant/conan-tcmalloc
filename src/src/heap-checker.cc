@@ -36,63 +36,135 @@
 
 #include "config.h"
 
-#include <fcntl.h>    // for O_RDONLY (we use syscall to do actual reads)
-#include <string.h>
+#ifndef HAVE_TLS
+#error we only support non-ancient Linux-es with native TLS support
+#endif
+
 #include <errno.h>
-#ifdef HAVE_UNISTD_H
-#include <unistd.h>
-#endif
-#ifdef HAVE_MMAP
-#include <sys/mman.h>
-#endif
-#ifdef HAVE_PTHREAD
+#include <fcntl.h>    // for O_RDONLY (we use syscall to do actual reads)
 #include <pthread.h>
-#endif
+#include <stddef.h>
+#include <string.h>
+#include <sys/mman.h> // TODO: check if needed
 #include <sys/stat.h>
-#include <sys/types.h>
-#include <time.h>
-#include <assert.h>
-
-#if defined(HAVE_LINUX_PTRACE_H)
-#include <linux/ptrace.h>
-#endif
-#ifdef HAVE_SYS_SYSCALL_H
 #include <sys/syscall.h>
-#endif
-#if defined(_WIN32) || defined(__CYGWIN__) || defined(__CYGWIN32__) || defined(__MINGW32__)
-#include <wtypes.h>
-#include <winbase.h>
-#undef ERROR     // windows defines these as macros, which can cause trouble
-#undef max
-#undef min
-#endif
+#include <sys/types.h>
+#include <sys/uio.h>
+#include <time.h>
+#include <unistd.h>
 
-#include <string>
-#include <vector>
-#include <map>
-#include <set>
+#include <sys/ptrace.h>
+#include <sys/procfs.h>
+#include <sys/user.h>
+#include <elf.h> // NT_PRSTATUS
+
 #include <algorithm>
 #include <functional>
+#include <map>
+#include <set>
+#include <string>
+#include <utility>
+#include <vector>
 
 #include <gperftools/heap-checker.h>
 
-#include "base/basictypes.h"
-#include "base/googleinit.h"
-#include "base/logging.h"
-#include <gperftools/stacktrace.h>
-#include "base/commandlineflags.h"
-#include "base/elfcore.h"              // for i386_regs
-#include "base/thread_lister.h"
-#include "heap-profile-table.h"
-#include "base/low_level_alloc.h"
-#include "malloc_hook-inl.h"
-#include <gperftools/malloc_hook.h>
 #include <gperftools/malloc_extension.h>
-#include "maybe_threads.h"
-#include "memory_region_map.h"
+#include <gperftools/malloc_hook.h>
+#include <gperftools/stacktrace.h>
+#include <gperftools/tcmalloc.h>
+
+#include "base/basictypes.h"
+#include "base/commandlineflags.h"
+#include "base/googleinit.h"
+#include "base/linuxthreads.h"
+#include "base/logging.h"
+#include "base/low_level_alloc.h"
 #include "base/spinlock.h"
-#include "base/sysinfo.h"
 #include "base/stl_allocator.h"
+#include "base/sysinfo.h"
+#include "heap-profile-table.h"
+#include "malloc_hook-inl.h"
+#include "memory_region_map.h"
+#include "safe_strerror.h"
+
+// When dealing with ptrace-ed threads, we need to capture all thread
+// registers (as potential live pointers), and we need to capture
+// thread's stack pointer to scan stack. capture_regs function uses
+// ptrace API to grab and scan registers and fetch stack pointer.
+template <typename Body>
+static std::pair<bool, uintptr_t> CaptureRegs(pid_t tid, const Body& body) {
+  uintptr_t sp_offset;
+#if defined(__aarch64__)
+  sp_offset = offsetof(user_regs_struct, sp);
+#elif defined(__arm__)
+  sp_offset = 13 * sizeof(uintptr_t); // reg 13 is sp on legacy arms
+#elif defined(__x86_64__)
+  sp_offset = offsetof(user_regs_struct, rsp);
+#elif defined(__i386__)
+  sp_offset = offsetof(user_regs_struct, esp);
+#elif defined(__riscv)
+  sp_offset = 2 * sizeof(uintptr_t); // register #2 is SP on riscv-s
+#elif defined(__PPC__)
+  sp_offset = 1 * sizeof(uintptr_t);
+#elif defined(__mips__)
+  sp_offset = offsetof(struct user, regs[EF_REG29]);
+#else
+  // unsupported HW architecture. Single-threaded programs don't run
+  // this code, so we still have chance to be useful on less supported
+  // architectures.
+  abort();
+#endif
+
+  elf_gregset_t regs;
+  int rv;
+
+  // PTRACE_GETREGSET is better interface, but manpage says it is
+  // 2.6.34 or later. RHEL6's kernel is, sadly, older. Yet, I'd like
+  // us to still support rhel6, so we handle this case too.
+#ifdef PTRACE_GETREGSET
+  iovec iov = {&regs, sizeof(regs)};
+  rv = syscall(SYS_ptrace, PTRACE_GETREGSET, tid, NT_PRSTATUS, &iov);
+  if (rv == 0) {
+    if (iov.iov_len != sizeof(regs)) {
+      abort(); // bug?!
+    }
+  }
+#else
+  errno = ENOSYS;
+  rv = -1;
+#endif
+
+  // Some Linux architectures and glibc versions only have
+  // PTRACE_GETREGSET, some only PTRACE_GETREGS and some both.
+  //
+  // But glibc tends to define PTRACE_XYZ constants as enums. Some
+  // newer versions also do define, but older glibc (i.e. as shipped
+  // by rhel 6) only define PT_GETREGS (to enum value
+  // PTRACE_GETREGS). Bionic and musl do regular defines,
+  // thankfully. So there seem to be no absolutely perfect way to
+  // detect things.
+  //
+  // We do detect older interface detection by testing defines for
+  // both PTRACE_GETREGS and PT_GETREGS. Which seems to work for range
+  // of OS-es we try to support.
+#if defined(PTRACE_GETREGS) || defined(PT_GETREGS)
+  if (rv < 0 && errno == ENOSYS) {
+    rv = syscall(SYS_ptrace, PTRACE_GETREGS, tid, nullptr, &regs);
+  }
+#endif
+
+  if (rv < 0) {
+    return {false, 0};
+  }
+
+  uintptr_t sp = *reinterpret_cast<uintptr_t*>(reinterpret_cast<uintptr_t>(&regs) + sp_offset);
+  for (void** p = reinterpret_cast<void**>(&regs);
+       p < reinterpret_cast<void**>(&regs + 1); ++p) {
+    body(*p);
+  }
+
+  return {true, sp};
+}
 
 using std::string;
 using std::basic_string;
@@ -493,7 +565,7 @@ inline void set_thread_disable_counter(int value) {
 class InitThreadDisableCounter {
  public:
   InitThreadDisableCounter() {
-    perftools_pthread_key_create(&thread_disable_counter_key, NULL);
+    pthread_key_create(&thread_disable_counter_key, NULL);
     // Set up the main thread's value, which we have a special variable for.
     void* p = (void*)(intptr_t)main_thread_counter;   // store the counter directly
     perftools_pthread_setspecific(thread_disable_counter_key, p);
@@ -548,7 +620,7 @@ inline static uintptr_t AsInt(const void* ptr) {
 
 // We've seen reports that strstr causes heap-checker crashes in some
 // libc's (?):
-//    http://code.google.com/p/gperftools/issues/detail?id=263
+//    https://github.com/gperftools/gperftools/issues/265
 // It's simple enough to use our own.  This is not in time-critical code.
 static const char* hc_strstr(const char* s1, const char* s2) {
   const size_t len = strlen(s2);
@@ -1010,14 +1082,6 @@ static enum {
 // and in other ways).
 //
 
-#if defined(HAVE_LINUX_PTRACE_H) && defined(HAVE_SYS_SYSCALL_H) && defined(DUMPER)
-# if (defined(__i386__) || defined(__x86_64))
-#  define THREAD_REGS i386_regs
-# elif defined(__PPC__)
-#  define THREAD_REGS ppc_regs
-# endif
-#endif
-
 /*static*/ int HeapLeakChecker::IgnoreLiveThreadsLocked(void* parameter,
                                                         int num_threads,
                                                         pid_t* thread_pids,
@@ -1038,32 +1102,22 @@ static enum {
   for (int i = 0; i < num_threads; ++i) {
     // the leak checking thread itself is handled
     // specially via self_thread_stack, not here:
-    if (thread_pids[i] == self_thread_pid) continue;
+    if (thread_pids[i] == self_thread_pid) {
+      continue;
+    }
     RAW_VLOG(11, "Handling thread with pid %d", thread_pids[i]);
-#ifdef THREAD_REGS
-    THREAD_REGS thread_regs;
-#define sys_ptrace(r, p, a, d)  syscall(SYS_ptrace, (r), (p), (a), (d))
-    // We use sys_ptrace to avoid thread locking
-    // because this is called from TCMalloc_ListAllProcessThreads
-    // when all but this thread are suspended.
-    if (sys_ptrace(PTRACE_GETREGS, thread_pids[i], NULL, &thread_regs) == 0) {
-      // Need to use SP to get all the data from the very last stack frame:
-      COMPILE_ASSERT(sizeof(thread_regs.SP) == sizeof(void*),
-                     SP_register_does_not_look_like_a_pointer);
-      RegisterStackLocked(reinterpret_cast<void*>(thread_regs.SP));
-      // Make registers live (just in case PTRACE_ATTACH resulted in some
-      // register pointers still being in the registers and not on the stack):
-      for (void** p = reinterpret_cast<void**>(&thread_regs);
-           p < reinterpret_cast<void**>(&thread_regs + 1); ++p) {
-        RAW_VLOG(12, "Thread register %p", *p);
-        thread_registers.push_back(*p);
-      }
+    auto add_reg = [&thread_registers] (void *reg) {
+      RAW_VLOG(12, "Thread register %p", reg);
+      thread_registers.push_back(reg);
+    };
+    uintptr_t sp;
+    bool ok;
+    std::tie(ok, sp) = CaptureRegs(thread_pids[i], add_reg);
+    if (ok) {
+      RegisterStackLocked(reinterpret_cast<void*>(sp));
     } else {
       failures += 1;
     }
-#else
-    failures += 1;
-#endif
   }
   // Use all the collected thread (stack) liveness sources:
   IgnoreLiveObjectsLocked("threads stack data", "");
@@ -1420,7 +1474,6 @@ static SpinLock alignment_checker_lock(SpinLock::LINKER_INITIALIZED);
     }
     if (size < sizeof(void*)) continue;
 
-#ifdef NO_FRAME_POINTER
     // Frame pointer omission requires us to use libunwind, which uses direct
     // mmap and munmap system calls, and that needs special handling.
     if (name2 == kUnnamedProcSelfMapEntry) {
@@ -1437,12 +1490,11 @@ static SpinLock alignment_checker_lock(SpinLock::LINKER_INITIALIZED);
           // Skip unreadable object, so we don't crash trying to sweep it.
           RAW_VLOG(0, "Ignoring inaccessible object [%p, %p) "
                    "(msync error %d (%s))",
-                   object, object + size, errno, strerror(errno));
+                   object, object + size, errno, tcmalloc::SafeStrError(errno).c_str());
           continue;
         }
       }
     }
-#endif
 
     const char* const max_object = object + size - sizeof(void*);
     while (object <= max_object) {
@@ -1596,10 +1648,10 @@ void HeapLeakChecker::Create(const char *name, bool make_start_snapshot) {
       }
 
       const HeapProfileTable::Stats& t = heap_profile->total();
-      const size_t start_inuse_bytes = t.alloc_size - t.free_size;
-      const size_t start_inuse_allocs = t.allocs - t.frees;
-      RAW_VLOG(10, "Start check \"%s\" profile: %zu bytes "
-               "in %zu objects",
+      const int64_t start_inuse_bytes = t.alloc_size - t.free_size;
+      const int64_t start_inuse_allocs = t.allocs - t.frees;
+      RAW_VLOG(10, "Start check \"%s\" profile: %" PRId64 " bytes "
+               "in %" PRId64 " objects",
                name_, start_inuse_bytes, start_inuse_allocs);
     } else {
       RAW_LOG(WARNING, "Heap checker is not active, "
@@ -1830,8 +1882,8 @@ bool HeapLeakChecker::DoNoLeaks(ShouldSymbolize should_symbolize) {
              "(but no 100%% guarantee that there aren't any): "
              "found %" PRId64 " reachable heap objects of %" PRId64 " bytes",
              name_,
-             int64(stats.allocs - stats.frees),
-             int64(stats.alloc_size - stats.free_size));
+             stats.allocs - stats.frees,
+             stats.alloc_size - stats.free_size);
   } else {
     if (should_symbolize == SYMBOLIZE) {
       // To turn addresses into symbols, we need to fork, which is a
@@ -1849,8 +1901,6 @@ bool HeapLeakChecker::DoNoLeaks(ShouldSymbolize should_symbolize) {
       // Make sure all the hooks really got unset:
       RAW_CHECK(MallocHook::GetNewHook() == NULL, "");
       RAW_CHECK(MallocHook::GetDeleteHook() == NULL, "");
-      RAW_CHECK(MallocHook::GetMmapHook() == NULL, "");
-      RAW_CHECK(MallocHook::GetSbrkHook() == NULL, "");
       have_disabled_hooks_for_symbolize = true;
       leaks->ReportLeaks(name_, pprof_file, true);  // true = should_symbolize
     } else {
@@ -2031,7 +2081,7 @@ void HeapLeakChecker_InternalInitStart() {
                    FLAGS_heap_check.c_str());
   }
   // FreeBSD doesn't seem to honor atexit execution order:
-  //    http://code.google.com/p/gperftools/issues/detail?id=375
+  //    https://github.com/gperftools/gperftools/issues/378
   // Since heap-checking before destructors depends on atexit running
   // at the right time, on FreeBSD we always check after, even in the
   // less strict modes.  This just means FreeBSD is always a bit
@@ -2077,13 +2127,15 @@ void HeapLeakChecker_InternalInitStart() {
   // and heap profiler is indeed able to keep track
   // of the objects being allocated.
   // We test this to make sure we are indeed checking for leaks.
-  char* test_str = new char[5];
+  char* test_str = new (tc_newarray(5)) char[5];
   size_t size;
   { SpinLockHolder l(&heap_checker_lock);
     RAW_CHECK(heap_profile->FindAlloc(test_str, &size),
               "our own new/delete not linked?");
   }
-  delete[] test_str;
+
+  tc_deletearray(test_str);
+
   { SpinLockHolder l(&heap_checker_lock);
     // This check can fail when it should not if another thread allocates
     // into this same spot right this moment,
@@ -2303,8 +2355,10 @@ void HeapLeakChecker_BeforeConstructors() {
 // HeapLeakChecker is initialized and installs all its hooks early enough to
 // track absolutely all memory allocations and all memory region acquisitions
 // via mmap and sbrk.
-extern "C" void MallocHook_InitAtFirstAllocation_HeapLeakChecker() {
-  HeapLeakChecker_BeforeConstructors();
+extern "C" int MallocHook_InitAtFirstAllocation_HeapLeakChecker() {
+  static tcmalloc::TrivialOnce once;
+
+  return once.RunOnce(&HeapLeakChecker_BeforeConstructors);
 }
 
 // This function is executed after all global object destructors run.
