@@ -1,0 +1,16 @@
+diff --git a/src/src/tcmalloc.cc b/src/src/tcmalloc.cc
+index 47c6a61..64f1dfe 100644
+--- a/src/src/tcmalloc.cc
++++ b/src/src/tcmalloc.cc
+@@ -1108,7 +1108,10 @@ size_t TCMallocImplementation::GetEstimatedAllocatedSize(size_t size) {
+ static int tcmallocguard_refcount = 0;  // no lock needed: runs before main()
+ TCMallocGuard::TCMallocGuard() {
+   if (tcmallocguard_refcount++ == 0) {
+-    ReplaceSystemAlloc();    // defined in libc_override_*.h
++    const char* env = getenv("TCMALLOC_REPLACE_SYSTEM_ALLOC_DISABLE");
++    if (env == nullptr || *env == 0 || stricmp(env, "true") != 0) {
++      ReplaceSystemAlloc();    // defined in libc_override_*.h
++    }
+     tc_free(tc_malloc(1));
+     ThreadCache::InitTSD();
+     tc_free(tc_malloc(1));
