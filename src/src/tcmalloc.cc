@@ -217,6 +217,10 @@ extern "C" {
   struct mallinfo tc_mallinfo(void) PERFTOOLS_NOTHROW
       ATTRIBUTE_SECTION(google_malloc);
 #endif
+#ifdef HAVE_STRUCT_MALLINFO2
+  struct mallinfo2 tc_mallinfo2(void) PERFTOOLS_NOTHROW
+      ATTRIBUTE_SECTION(google_malloc);
+#endif
 
   void* tc_new(size_t size)
       ATTRIBUTE_SECTION(google_malloc);
@@ -1120,7 +1124,12 @@ TCMallocGuard::TCMallocGuard() {
     if (RunningOnValgrind()) {
       // Let Valgrind uses its own malloc (so don't register our extension).
     } else {
-      MallocExtension::Register(new TCMallocImplementation);
+      static union {
+        char chars[sizeof(TCMallocImplementation)];
+        void *ptr;
+      } tcmallocimplementation_space;
+
+      MallocExtension::Register(new (tcmallocimplementation_space.chars) TCMallocImplementation());
     }
 #endif
   }
@@ -1669,33 +1678,37 @@ inline int do_mallopt(int cmd, int value) {
   return 1;     // Indicates error
 }
 
-#ifdef HAVE_STRUCT_MALLINFO
-inline struct mallinfo do_mallinfo() {
+#if defined(HAVE_STRUCT_MALLINFO) || defined(HAVE_STRUCT_MALLINFO2)
+template <typename Mallinfo>
+inline Mallinfo do_mallinfo() {
   TCMallocStats stats;
   ExtractStats(&stats, NULL, NULL, NULL);
 
   // Just some of the fields are filled in.
-  struct mallinfo info;
+  Mallinfo info;
   memset(&info, 0, sizeof(info));
 
-  // Unfortunately, the struct contains "int" field, so some of the
-  // size values will be truncated.
-  info.arena     = static_cast<int>(stats.pageheap.system_bytes);
-  info.fsmblks   = static_cast<int>(stats.thread_bytes
-                                    + stats.central_bytes
-                                    + stats.transfer_bytes);
-  info.fordblks  = static_cast<int>(stats.pageheap.free_bytes +
-                                    stats.pageheap.unmapped_bytes);
-  info.uordblks  = static_cast<int>(stats.pageheap.system_bytes
-                                    - stats.thread_bytes
-                                    - stats.central_bytes
-                                    - stats.transfer_bytes
-                                    - stats.pageheap.free_bytes
-                                    - stats.pageheap.unmapped_bytes);
+  // Note, struct mallinfo contains "int" fields, so some of the size
+  // values will be truncated. But thankfully we also have
+  // mallinfo2. We're able to produce code for both of those variants.
+  using inttp = decltype(info.arena); // int or size_t in practice
+
+  info.arena     = static_cast<inttp>(stats.pageheap.system_bytes);
+  info.fsmblks   = static_cast<inttp>(stats.thread_bytes
+                                      + stats.central_bytes
+                                      + stats.transfer_bytes);
+  info.fordblks  = static_cast<inttp>(stats.pageheap.free_bytes +
+                                      stats.pageheap.unmapped_bytes);
+  info.uordblks  = static_cast<inttp>(stats.pageheap.system_bytes
+                                      - stats.thread_bytes
+                                      - stats.central_bytes
+                                      - stats.transfer_bytes
+                                      - stats.pageheap.free_bytes
+                                      - stats.pageheap.unmapped_bytes);
 
   return info;
 }
-#endif  // HAVE_STRUCT_MALLINFO
+#endif  // HAVE_STRUCT_MALLINFO || HAVE_STRUCT_MALLINFO2
 
 }  // end unnamed namespace
 
@@ -2211,7 +2224,13 @@ extern "C" PERFTOOLS_DLL_DECL int tc_mallopt(int cmd, int value) PERFTOOLS_NOTHR
 
 #ifdef HAVE_STRUCT_MALLINFO
 extern "C" PERFTOOLS_DLL_DECL struct mallinfo tc_mallinfo(void) PERFTOOLS_NOTHROW {
-  return do_mallinfo();
+  return do_mallinfo<struct mallinfo>();
+}
+#endif
+
+#ifdef HAVE_STRUCT_MALLINFO2
+extern "C" PERFTOOLS_DLL_DECL struct mallinfo2 tc_mallinfo2(void) PERFTOOLS_NOTHROW {
+  return do_mallinfo<struct mallinfo2>();
 }
 #endif
 

@@ -145,6 +145,9 @@
 /* Define to 1 if the system has the type `struct mallinfo'. */
 /* #undef HAVE_STRUCT_MALLINFO */
 
+/* Define to 1 if the system has the type `struct mallinfo2'. */
+/* #undef HAVE_STRUCT_MALLINFO2 */
+
 /* Define to 1 if you have the <sys/cdefs.h> header file. */
 /* #undef HAVE_SYS_CDEFS_H */
 
@@ -212,7 +215,7 @@
 #define PACKAGE_NAME "gperftools"
 
 /* Define to the full name and version of this package. */
-#define PACKAGE_STRING "gperftools 2.13"
+#define PACKAGE_STRING "gperftools 2.15"
 
 /* Define to the one symbol short name of this package. */
 #define PACKAGE_TARNAME "gperftools"
@@ -221,10 +224,7 @@
 #define PACKAGE_URL ""
 
 /* Define to the version of this package. */
-#define PACKAGE_VERSION "2.13"
-
-/* How to access the PC from a struct ucontext */
-/* #undef PC_FROM_UCONTEXT */
+#define PACKAGE_VERSION "2.15"
 
 /* Always the empty-string on non-windows systems. On windows, should be
    "__declspec(dllexport)". This way, when we compile the dll, we export our

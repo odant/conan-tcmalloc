@@ -37,8 +37,8 @@
 #include <fcntl.h>
 #endif
 #include <inttypes.h>
-// We only need malloc.h for struct mallinfo.
-#ifdef HAVE_STRUCT_MALLINFO
+// We only need malloc.h for structs mallinfo and mallinfo2.
+#if defined(HAVE_STRUCT_MALLINFO) || defined(HAVE_STRUCT_MALLINFO2)
 // Malloc can be in several places on older versions of OS X.
 # if defined(HAVE_MALLOC_H)
 # include <malloc.h>
@@ -1573,7 +1573,13 @@ extern "C" PERFTOOLS_DLL_DECL int tc_mallopt(int cmd, int value) PERFTOOLS_NOTHR
 
 #ifdef HAVE_STRUCT_MALLINFO
 extern "C" PERFTOOLS_DLL_DECL struct mallinfo tc_mallinfo(void) PERFTOOLS_NOTHROW {
-  return do_mallinfo();
+  return do_mallinfo<struct mallinfo>();
+}
+#endif
+
+#ifdef HAVE_STRUCT_MALLINFO2
+extern "C" PERFTOOLS_DLL_DECL struct mallinfo2 tc_mallinfo2(void) PERFTOOLS_NOTHROW {
+  return do_mallinfo<struct mallinfo2>();
 }
 #endif
 

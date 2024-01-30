@@ -4,12 +4,12 @@
 # make sure we're interpreted by some minimal autoconf
 AC_PREREQ([2.69])
 
-AC_INIT([gperftools],[2.13],[gperftools@googlegroups.com])
+AC_INIT([gperftools],[2.15],[gperftools@googlegroups.com])
 # Update this value for every release!  (A:B:C will map to foo.so.(A-C).C.B)
 # http://www.gnu.org/software/libtool/manual/html_node/Updating-version-info.html
-TCMALLOC_SO_VERSION=9:14:5
-PROFILER_SO_VERSION=5:9:5
-TCMALLOC_AND_PROFILER_SO_VERSION=10:9:6
+TCMALLOC_SO_VERSION=9:16:5
+PROFILER_SO_VERSION=5:11:5
+TCMALLOC_AND_PROFILER_SO_VERSION=10:11:6
 
 AC_SUBST(TCMALLOC_SO_VERSION)
 AC_SUBST(PROFILER_SO_VERSION)
@@ -250,6 +250,7 @@ AC_MSG_RESULT($ac_cv___attribute__aligned_fn)
 
 # TODO(csilvers): we could remove a lot when WITH_CPU_PROFILER etc is "no".
 AC_CHECK_TYPES([struct mallinfo],,, [#include <malloc.h>])
+AC_CHECK_TYPES([struct mallinfo2],,, [#include <malloc.h>])
 AC_CHECK_TYPES([Elf32_Versym],,, [#include <elf.h>])   # for vdso_support.h
 AC_CHECK_FUNCS(sbrk)            # for tcmalloc to get memory
 AC_CHECK_FUNCS(__sbrk)          # for tcmalloc to get memory
@@ -270,8 +271,14 @@ AC_CHECK_HEADERS(grp.h)         # for heapchecker_unittest
 AC_CHECK_HEADERS(pwd.h)         # for heapchecker_unittest
 AC_CHECK_HEADERS(sys/resource.h)         # for memalign_unittest.cc
 AC_CHECK_HEADERS(sys/cdefs.h)   # Where glibc defines __THROW
-# We also need <ucontext.h>/<sys/ucontext.h>, but we get those from
-# AC_PC_FROM_UCONTEXT, below.
+
+AC_CHECK_HEADERS(sys/ucontext.h)
+AC_CHECK_HEADERS(ucontext.h)
+AC_CHECK_HEADERS(cygwin/signal.h)        # ucontext on cywgin
+AC_CHECK_HEADERS(asm/ptrace.h)           # get ptrace macros, e.g. PT_NIP
+
+# check for socketpair, some system, such as QNX, need link in an socket library to use it
+AC_SEARCH_LIBS([socketpair], [socket])
 
 # We override a lot of memory allocation routines, not all of which are
 # standard.  For those the system doesn't declare, we'll declare ourselves.
@@ -281,6 +288,7 @@ AC_CHECK_DECLS([cfree,
                 valloc,
                 pvalloc],,,
                [#define _XOPEN_SOURCE 600
+                #define _QNX_SOURCE 1
                 #include <stdlib.h>
                 #include <malloc.h>])
 
@@ -288,6 +296,12 @@ if test "$ac_cv_type_struct_mallinfo" = yes; then
   AC_SUBST(ac_cv_have_struct_mallinfo, 1)   # gperftools/tcmalloc.h needs this
 else
   AC_SUBST(ac_cv_have_struct_mallinfo, 0)
+fi
+
+if test "$ac_cv_type_struct_mallinfo2" = yes; then
+  AC_SUBST(ac_cv_have_struct_mallinfo2, 1)   # gperftools/tcmalloc.h needs this
+else
+  AC_SUBST(ac_cv_have_struct_mallinfo2, 0)
 fi
 
 # We hardcode HAVE_MMAP to 1. There are no interesting systems anymore
@@ -301,14 +315,14 @@ case "$host" in
 esac
 
 # We want to access the "PC" (Program Counter) register from a struct
-# ucontext.  Every system has its own way of doing that.  We try all the
-# possibilities we know about.  Note REG_PC should come first (REG_RIP
-# is also defined on solaris, but does the wrong thing).  But don't
-# bother if we're not doing cpu-profiling.
-# [*] means that we've not actually tested one of these systems
+# ucontext.  Every system has its own way of doing that. But in case
+# we're dealing with unknown system, we have to check if GetPC
+# actually works. But don't bother if we're not doing cpu-profiling.
 if test "$enable_cpu_profiler" = yes; then
-  AC_PC_FROM_UCONTEXT(AC_MSG_WARN(Could not find the PC.  Will not try to compile libprofiler...);
-                      enable_cpu_profiler=no)
+  AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[#include "src/getpc.h"]], [GetPC({})])],
+                    [],
+                    [AC_MSG_WARN(Could not find the PC.  Will not try to compile libprofiler...)
+                     enable_cpu_profiler=no])
 fi
 
 # Some tests test the behavior of .so files, and only make sense for dynamic.
@@ -498,6 +512,8 @@ AC_LINK_IFELSE([AC_LANG_PROGRAM([#if defined(__GNUC__) && ((__GNUC__ < 4) || (__
 #error OSX __thread support is known to call malloc which makes it unsafe to use from malloc replacement
 #elif defined(_AIX)
 #error AIX thread support is known to call malloc which makes it unsafe to use from malloc replacement
+#elif defined(__QNXNTO__)
+#error QNX thread support is known to call malloc which makes it unsafe to use from malloc replacement
 #endif
 ], [static __thread int p = 0])],
                [AC_DEFINE(HAVE_TLS, 1,

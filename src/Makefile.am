@@ -68,7 +68,7 @@ if HAVE_OBJCOPY_WEAKEN
 WEAKEN = $(OBJCOPY) -W malloc -W free -W realloc -W calloc -W cfree \
          -W memalign -W posix_memalign -W valloc -W pvalloc \
          -W aligned_alloc \
-         -W malloc_stats -W mallopt -W mallinfo -W nallocx \
+         -W malloc_stats -W mallopt -W mallinfo -W mallinfo2 -W nallocx \
          -W _Znwm -W _ZnwmRKSt9nothrow_t -W _Znam -W _ZnamRKSt9nothrow_t \
          -W _ZdlPv -W _ZdaPv \
          -W __Znwm -W __ZnwmRKSt9nothrow_t -W __Znam -W __ZnamRKSt9nothrow_t \
@@ -158,7 +158,6 @@ LOGGING_INCLUDES = src/base/logging.h \
                    src/base/dynamic_annotations.h
 noinst_LTLIBRARIES += liblogging.la
 liblogging_la_SOURCES = src/base/logging.cc \
-                        src/base/dynamic_annotations.cc \
                         $(LOGGING_INCLUDES)
 
 SYSINFO_INCLUDES = src/base/sysinfo.h \
@@ -168,6 +167,7 @@ SYSINFO_INCLUDES = src/base/sysinfo.h \
                    src/base/basictypes.h
 noinst_LTLIBRARIES += libsysinfo.la
 libsysinfo_la_SOURCES = src/base/sysinfo.cc \
+                        src/base/dynamic_annotations.cc \
                         $(SYSINFO_INCLUDES)
 libsysinfo_la_LIBADD = $(NANOSLEEP_LIBS)
 
@@ -205,6 +205,7 @@ noinst_LTLIBRARIES += libspinlock.la
 libspinlock_la_SOURCES = src/base/spinlock.cc \
                          src/base/spinlock_internal.cc \
                          $(SPINLOCK_INCLUDES)
+libspinlock_la_LIBADD = -lsynchronization
 
 LIBSPINLOCK = libwindows.la libspinlock.la libsysinfo.la liblogging.la
 
@@ -321,8 +322,10 @@ STACKTRACE_UNITTEST_INCLUDES = src/config_for_unittests.h \
                                $(STACKTRACE_INCLUDES) \
                                $(LOGGING_INCLUDES)
 stacktrace_unittest_SOURCES = src/tests/stacktrace_unittest.cc \
+                              $(libstacktrace_la_SOURCES) \
                               $(STACKTRACE_UNITTEST_INCLUDES)
-stacktrace_unittest_LDADD = libstacktrace.la liblogging.la libfake_stacktrace_scope.la $(STACKTRACE_UNITTEST_LIBS)
+stacktrace_unittest_CXXFLAGS = $(AM_CXXFLAGS) -DSTACKTRACE_IS_TESTED
+stacktrace_unittest_LDADD = $(libstacktrace_la_LIBADD) liblogging.la libfake_stacktrace_scope.la $(STACKTRACE_UNITTEST_LIBS)
 # nice to have. Allows glibc's backtrace_symbols to work.
 stacktrace_unittest_LDFLAGS = -export-dynamic
 
@@ -1235,6 +1238,7 @@ if WITH_CPU_PROFILER
 S_CPU_PROFILER_INCLUDES = src/profiledata.h \
                           src/profile-handler.h \
                           src/getpc.h \
+                          src/getpc-inl.h \
                           src/base/basictypes.h \
                           src/base/commandlineflags.h \
                           src/base/googleinit.h \

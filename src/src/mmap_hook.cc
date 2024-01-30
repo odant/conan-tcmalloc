@@ -48,6 +48,9 @@
 #ifdef HAVE_MMAP
 # define mremap glibc_mremap
 # include <sys/mman.h>
+# ifndef MAP_ANONYMOUS
+#  define MAP_ANONYMOUS MAP_ANON
+# endif
 #include <sys/types.h>
 # undef mremap
 #endif
@@ -223,7 +226,8 @@ static void* do_mmap(void* start, size_t length, int prot, int flags, int fd, in
 
 #ifdef DEFINED_DO_MMAP
 
-static void* do_mmap_with_hooks(void* start, size_t length, int prot, int flags, int fd, int64_t offset) {
+static inline ATTRIBUTE_ALWAYS_INLINE
+void* do_mmap_with_hooks(void* start, size_t length, int prot, int flags, int fd, int64_t offset) {
   void* result = do_mmap(start, length, prot, flags, fd, offset);
   if (result == MAP_FAILED) {
     return result;

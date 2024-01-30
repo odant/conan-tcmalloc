@@ -128,6 +128,9 @@
 /* Define to 1 if the system has the type `struct mallinfo'. */
 #cmakedefine HAVE_STRUCT_MALLINFO
 
+/* Define to 1 if the system has the type `struct mallinfo2'. */
+#cmakedefine HAVE_STRUCT_MALLINFO2
+
 /* Define to 1 if you have the <sys/cdefs.h> header file. */
 #cmakedefine HAVE_SYS_CDEFS_H
 
@@ -206,9 +209,6 @@
 /* Define to the version of this package. */
 #define PACKAGE_VERSION "@PROJECT_VERSION@"
 
-/* How to access the PC from a struct ucontext */
-#define PC_FROM_UCONTEXT @PC_FROM_UCONTEXT_DEF@
-
 /* Always the empty-string on non-windows systems. On windows, should be
    "__declspec(dllexport)". This way, when we compile the dll, we export our
    functions/classes. It's safe to define this here because config.h is only
@@ -230,6 +230,9 @@
 #endif
 #endif
 
+/* if libgcc stacktrace method should be default */
+#cmakedefine PREFER_LIBGCC_UNWINDER
+
 /* Mark the systems where we know it's bad if pthreads runs too
    early before main (before threads are initialized, presumably).  */
 #ifdef __FreeBSD__
@@ -240,7 +243,7 @@
 #cmakedefine TCMALLOC_ALIGN_8BYTES
 
 /* Define internal page size for tcmalloc as number of left bitshift */
-#cmakedefine TCMALLOC_PAGE_SIZE_SHIFT
+#cmakedefine TCMALLOC_PAGE_SIZE_SHIFT @TCMALLOC_PAGE_SIZE_SHIFT@
 
 /* Version number of package */
 #define VERSION @PROJECT_VERSION@

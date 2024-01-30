@@ -62,6 +62,9 @@
 #include <process.h>          // for getpid() (actually, _getpid())
 #include <shlwapi.h>          // for SHGetValueA()
 #include <tlhelp32.h>         // for Module32First()
+#elif defined(__QNXNTO__)
+#include <sys/mman.h>
+#include <sys/sysmacros.h>
 #endif
 
 #ifdef PLATFORM_WINDOWS
@@ -222,41 +225,49 @@ extern "C" {
 // GetUniquePathFromEnv value. Second and third return values are
 // strings to be appended to path for extra identification.
 static std::tuple<bool, const char*, const char*> QueryHPCEnvironment() {
+  auto mk = [] (bool a, const char* b, const char* c) {
+    // We have to work around gcc 5 bug in tuple constructor. It
+    // doesn't let us do {a, b, c}
+    //
+    // TODO(2023-09-27): officially drop gcc 5 support
+    return std::make_tuple<bool, const char*, const char*>(std::move(a), std::move(b), std::move(c));
+  };
+
   // Check for the PMIx environment
-  char* envval = getenv("PMIX_RANK");
+  const char* envval = getenv("PMIX_RANK");
   if (envval != nullptr && *envval != 0) {
     // PMIx exposes the rank that is convenient for process identification
     // Don't append pid, since we have rank to differentiate.
-    return {false, ".rank-", envval};
+    return mk(false, ".rank-", envval);
   }
 
   // Check for the Slurm environment
   envval = getenv("SLURM_JOB_ID");
   if (envval != nullptr && *envval != 0) {
     // Slurm environment detected
-    char* procid = getenv("SLURM_PROCID");
+    const char* procid = getenv("SLURM_PROCID");
     if (procid != nullptr && *procid != 0) {
       // Use Slurm process ID to differentiate
-      return {false, ".slurmid-", procid};
+      return mk(false, ".slurmid-", procid);
     }
     // Need to add PID to avoid conflicts
-    return {true, "", ""};
+    return mk(true, "", "");
   }
 
   // Check for Open MPI environment
   envval = getenv("OMPI_HOME");
   if (envval != nullptr && *envval != 0) {
-    return {true, "", ""};
+    return mk(true, "", "");
   }
 
   // Check for Hydra process manager (MPICH)
   envval = getenv("PMI_RANK");
   if (envval != nullptr && *envval != 0) {
-    return {false, ".rank-", envval};
+    return mk(false, ".rank-", envval);
   }
 
   // No HPC environment was detected
-  return {false, "", ""};
+  return mk(false, "", "");
 }
 
 // This takes as an argument an environment-variable name (like
@@ -337,7 +348,7 @@ int GetSystemCPUsCount()
 
 // ----------------------------------------------------------------------
 
-#if defined __linux__ || defined __FreeBSD__ || defined __NetBSD__ || defined __sun__ || defined __CYGWIN__ || defined __CYGWIN32__
+#if defined __linux__ || defined __FreeBSD__ || defined __NetBSD__ || defined __sun__ || defined __CYGWIN__ || defined __CYGWIN32__ || defined __QNXNTO__
 static void ConstructFilename(const char* spec, pid_t pid,
                               char* buf, int buf_size) {
   CHECK_LT(snprintf(buf, buf_size,
@@ -597,6 +608,13 @@ void ProcMapsIterator::Init(pid_t pid, Buffer *buffer,
                                        TH32CS_SNAPMODULE32,
                                        GetCurrentProcessId());
   memset(&module_, 0, sizeof(module_));
+#elif defined(__QNXNTO__)
+  if (pid == 0) {
+    ConstructFilename("/proc/self/pmap", 1, ibuf_, Buffer::kBufSize);
+  } else {
+    ConstructFilename("/proc/%d/pmap", pid, ibuf_, Buffer::kBufSize);
+  }
+  NO_INTR(fd_ = open(ibuf_, O_RDONLY));
 #else
   fd_ = -1;   // so Valid() is always false
 #endif
@@ -639,7 +657,7 @@ bool ProcMapsIterator::NextExt(uint64 *start, uint64 *end, char **flags,
                                uint64 *anon_mapping, uint64 *anon_pages,
                                dev_t *dev) {
 
-#if defined(__linux__) || defined(__NetBSD__) || defined(__FreeBSD__) || defined(__CYGWIN__) || defined(__CYGWIN32__)
+#if defined(__linux__) || defined(__NetBSD__) || defined(__FreeBSD__) || defined(__CYGWIN__) || defined(__CYGWIN32__) || defined(__QNXNTO__)
   do {
     // Advance to the start of the next line
     stext_ = nextline_;
@@ -675,8 +693,10 @@ bool ProcMapsIterator::NextExt(uint64 *start, uint64 *end, char **flags,
     *nextline_ = 0;                // turn newline into nul
     nextline_ += ((nextline_ < etext_)? 1 : 0);  // skip nul if not end of text
     // stext_ now points at a nul-terminated line
+#if !defined(__QNXNTO__)
     uint64 tmpstart, tmpend, tmpoffset;
     int64 tmpinode;
+#endif
     int major, minor;
     unsigned filename_offset = 0;
 #if defined(__linux__) || defined(__NetBSD__)
@@ -724,6 +744,42 @@ bool ProcMapsIterator::NextExt(uint64 *start, uint64 *end, char **flags,
                end ? end : &tmpend,
                flags_,
                &filename_offset) != 3) continue;
+#elif defined(__QNXNTO__)
+    // https://www.qnx.com/developers/docs/7.1/#com.qnx.doc.neutrino.sys_arch/topic/vm_calculations.html
+    // vaddr,size,flags,prot,maxprot,dev,ino,offset,rsv,guardsize,refcnt,mapcnt,path
+    // 0x00000025e9df9000,0x0000000000053000,0x00000071,0x05,0x0f,0x0000040b,0x0000000000000094,
+    //   0x0000000000000000,0x0000000000000000,0x00000000,0x00000005,0x00000003,/system/xbin/cat
+    {
+      uint64_t q_vaddr, q_size, q_ino, q_offset;
+      uint32_t q_flags, q_dev, q_prot;
+      int ret;
+      if (sscanf(stext_, "0x%" SCNx64 ",0x%" SCNx64 ",0x%" SCNx32 \
+                 ",0x%" SCNx32 ",0x%*x,0x%" SCNx32 ",0x%" SCNx64 \
+                 ",0x%" SCNx64 ",0x%*x,0x%*x,0x%*x,0x%*x,%n",
+                 &q_vaddr,
+                 &q_size,
+                 &q_flags,
+                 &q_prot,
+                 &q_dev,
+                 &q_ino,
+                 &q_offset,
+                 &filename_offset) != 7) continue;
+
+      // XXX: always is 00:00 in prof??
+      major = major(q_dev);
+      minor = minor(q_dev);
+      if (start) *start = q_vaddr;
+      if (end) *end = q_vaddr + q_size;
+      if (offset) *offset = q_offset;
+      if (inode) *inode = q_ino;
+      // right shifted by 8 bits, restore it
+      q_prot <<= 8;
+      flags_[0] = q_prot & PROT_READ ? 'r' : '-';
+      flags_[1] = q_prot & PROT_WRITE ? 'w' : '-';
+      flags_[2] = q_prot & PROT_EXEC ? 'x' : '-';
+      flags_[3] = q_flags & MAP_SHARED ? 's' : 'p';
+      flags_[4] = '\0';
+    }
 #endif
 
     // Depending on the Linux kernel being used, there may or may not be a space
@@ -740,6 +796,7 @@ bool ProcMapsIterator::NextExt(uint64 *start, uint64 *end, char **flags,
     if (filename) *filename = stext_ + filename_offset;
     if (dev) *dev = minor | (major << 8);
 
+#if !defined(__QNXNTO__)
     if (using_maps_backing_) {
       // Extract and parse physical page backing info.
       char *backing_ptr = stext_ + filename_offset +
@@ -769,6 +826,7 @@ bool ProcMapsIterator::NextExt(uint64 *start, uint64 *end, char **flags,
         }
       }
     }
+#endif
 
     return true;
   } while (etext_ > ibuf_);

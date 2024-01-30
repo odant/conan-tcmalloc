@@ -44,8 +44,15 @@
 // This is only used on OS-es with mmap support.
 #include <sys/mman.h>
 
-#if defined(PC_FROM_UCONTEXT) && (HAVE_SYS_UCONTEXT_H || HAVE_UCONTEXT_H)
+#if HAVE_SYS_UCONTEXT_H || HAVE_UCONTEXT_H
+
+#define DEFINE_TRIVIAL_GET
 #include "getpc.h"
+
+#if !defined(HAVE_TRIVIAL_GET) && !defined(__NetBSD__)
+#error sanity
+#endif
+
 #define HAVE_GETPC 1
 #endif
 
@@ -75,6 +82,27 @@ namespace stacktrace_generic_fp {
 #if __x86_64__ && !_LP64
 // x32 uses 64-bit stack entries but 32-bit addresses.
 #define PAD_FRAME
+#endif
+
+#if __aarch64__
+// Aarch64 has pointer authentication and uses the upper 16bit of a stack
+// or return address to sign it. These bits needs to be strip in order for
+// stacktraces to work.
+void *strip_PAC(void* _ptr) {
+  void *ret;
+  asm volatile(
+      "mov x30, %1\n\t"
+      "hint #7\n\t"  // xpaclri, is NOP for < armv8.3-a
+      "mov %0, x30\n\t"
+      : "=r"(ret)
+      : "r"(_ptr)
+      : "x30");
+  return ret;
+}
+
+#define STRIP_PAC(x) (strip_PAC((x)))
+#else
+#define STRIP_PAC(x) (x)
 #endif
 
 struct frame {
@@ -123,8 +151,6 @@ int capture(void **result, int max_depth, int skip_count,
             int *sizes) {
   int i = 0;
 
-  max_depth += skip_count;
-
   if (initial_pc != nullptr) {
     // This is 'with ucontext' case. We take first pc from ucontext
     // and then skip_count is ignored as we assume that caller only
@@ -133,18 +159,21 @@ int capture(void **result, int max_depth, int skip_count,
     if (max_depth == 0) {
       return 0;
     }
-    result[0] = *initial_pc;
+    result[0] = STRIP_PAC(*initial_pc);
+
     i++;
   }
+
+  max_depth += skip_count;
 
   constexpr uintptr_t kTooSmallAddr = 16 << 10;
   constexpr uintptr_t kFrameSizeThreshold = 128 << 10;
 
 #ifdef __arm__
   // note, (32-bit, legacy) arm support is not entirely functional
-  // w.r.t. frame-pointer-bases backtracing. Only recent clangs
+  // w.r.t. frame-pointer-based backtracing. Only recent clangs
   // generate "right" frame pointer setup and only with
-  // --enable-frame-pointers. Current gcc's are hopeless (somewhat
+  // --enable-frame-pointers. Current gcc-s are hopeless (somewhat
   // older gcc's (circa gcc 6 or so) did something that looks right,
   // but not recent ones).
   constexpr uintptr_t kAlignment = 4;
@@ -156,6 +185,7 @@ int capture(void **result, int max_depth, int skip_count,
   constexpr uintptr_t kAlignment = 16;
 #endif
 
+  uintptr_t current_frame_addr = reinterpret_cast<uintptr_t>(__builtin_frame_address(0));
   uintptr_t initial_frame_addr = reinterpret_cast<uintptr_t>(initial_frame);
   if (((initial_frame_addr + sizeof(frame)) & (kAlignment - 1)) != 0) {
     return i;
@@ -163,11 +193,14 @@ int capture(void **result, int max_depth, int skip_count,
   if (initial_frame_addr < kTooSmallAddr) {
     return i;
   }
+  if (initial_frame_addr - current_frame_addr > kFrameSizeThreshold) {
+    return i;
+  }
 
   // Note, we assume here that this functions frame pointer is not
   // bogus. Which is true if this code is built with
   // -fno-omit-frame-pointer.
-  frame* prev_f = reinterpret_cast<frame*>(__builtin_frame_address(0));
+  frame* prev_f = reinterpret_cast<frame*>(current_frame_addr);
   frame *f = adjust_fp(reinterpret_cast<frame*>(initial_frame));
 
   while (i < max_depth) {
@@ -185,7 +218,7 @@ int capture(void **result, int max_depth, int skip_count,
       if (WithSizes) {
         sizes[i - skip_count] = reinterpret_cast<uintptr_t>(prev_f) - reinterpret_cast<uintptr_t>(f);
       }
-      result[i - skip_count] = pc;
+      result[i - skip_count] = STRIP_PAC(pc);
     }
 
     i++;
@@ -283,6 +316,9 @@ static int GET_STACK_TRACE_OR_FRAMES {
     SETUP_FRAME(&uc->uc_mcontext.__gregs[REG_PC], uc->uc_mcontext.__gregs[REG_S0]);
 #elif __linux__ && __aarch64__
     SETUP_FRAME(&uc->uc_mcontext.pc, uc->uc_mcontext.regs[29]);
+#elif __linux__ && __arm__
+    // Note: arm's frame pointer support is borked in recent GCC-s.
+    SETUP_FRAME(&uc->uc_mcontext.arm_pc, uc->uc_mcontext.arm_fp);
 #elif __linux__ && __i386__
     SETUP_FRAME(&uc->uc_mcontext.gregs[REG_EIP], uc->uc_mcontext.gregs[REG_EBP]);
 #elif __linux__ && __x86_64__
@@ -309,7 +345,12 @@ static int GET_STACK_TRACE_OR_FRAMES {
     // frame we need. Also, this is how our CPU profiler is built. It
     // always places "pc from ucontext" first and then if necessary
     // deduplicates it from backtrace.
+
     result[0] = GetPC(*uc);
+    if (result[0] == nullptr) {
+      // This OS/HW combo actually lacks known way to extract PC.
+      ucp = nullptr;
+    }
 #else
     ucp = nullptr;
 #endif
