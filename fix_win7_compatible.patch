@@ -1,0 +1,126 @@
+diff --git a/src/src/base/spinlock_win32-inl.h b/src/src/base/spinlock_win32-inl.h
+index 5f76a8b..8c078b8 100644
+--- a/src/src/base/spinlock_win32-inl.h
++++ b/src/src/base/spinlock_win32-inl.h
+@@ -35,28 +35,107 @@
+ 
+ #include <windows.h>
+ 
+-#ifdef _MSC_VER
+-#   pragma comment(lib, "Synchronization.lib")
+-#endif
+-
+ namespace base {
+ namespace internal {
++    
++class WindowsFutex
++{
++public:
++    WindowsFutex() {
++        load();
++    }
++    
++    ~WindowsFutex() {
++        unload();    
++    }
++
++    typedef BOOL (WINAPI *WaitOnAddress_t)(_In_reads_bytes_(AddressSize) volatile VOID* Address,
++                                           _In_reads_bytes_(AddressSize) PVOID CompareAddress,
++                                           _In_ SIZE_T AddressSize,
++                                           _In_opt_ DWORD dwMilliseconds);
++
++    typedef VOID (WINAPI *WakeByAddressSingle_t)(_In_ PVOID Address);
++
++    typedef VOID (WINAPI *WakeByAddressAll_t)(_In_ PVOID Address);
++
++    inline BOOL WaitOnAddress(_In_reads_bytes_(AddressSize) volatile VOID* Address,
++                              _In_reads_bytes_(AddressSize) PVOID CompareAddress,
++                              _In_ SIZE_T AddressSize,
++                              _In_opt_ DWORD dwMilliseconds) {
++        return _WaitOnAddress(Address, CompareAddress, AddressSize, dwMilliseconds);
++    }
++
++    inline VOID WakeByAddressSingle(_In_ PVOID Address) {
++        return _WakeByAddressSingle(Address);
++    }
++
++    inline VOID WakeByAddressAll(_In_ PVOID Address) {
++        return _WakeByAddressAll(Address);
++    }
++    
++    inline bool valid() const {
++        return _module != NULL;
++    }
++
++private:
++    void load() {
++        _module = ::LoadLibraryW(L"api-ms-win-core-synch-l1-2-0.dll");
++        if (_module == NULL)
++            return;
++        _WaitOnAddress       = (WaitOnAddress_t)       ::GetProcAddress(_module, "WaitOnAddress");
++        _WakeByAddressSingle = (WakeByAddressSingle_t) ::GetProcAddress(_module, "WakeByAddressSingle");
++        _WakeByAddressAll    = (WakeByAddressAll_t)    ::GetProcAddress(_module, "WakeByAddressAll");
++        if (_WaitOnAddress == nullptr || _WakeByAddressSingle == nullptr || _WakeByAddressAll == nullptr)
++            unload();
++    }
++ 
++    void unload() {
++        if (_module == NULL)
++            return;
++        ::FreeLibrary(_module);
++
++        _module = NULL;
++
++        _WaitOnAddress          = nullptr;
++        _WakeByAddressSingle    = nullptr;
++        _WakeByAddressAll       = nullptr;
++    }
++
++    HMODULE               _module{ NULL };
++    WaitOnAddress_t       _WaitOnAddress{ nullptr };
++    WakeByAddressSingle_t _WakeByAddressSingle{ nullptr };
++    WakeByAddressAll_t    _WakeByAddressAll{ nullptr };
++};    
++
++WindowsFutex windowsFutex;
+ 
+ void SpinLockDelay(std::atomic<int> *w, int32 value, int loop) {
+-  if (loop != 0) {
+-    auto wait_ns = static_cast<uint64_t>(base::internal::SuggestedDelayNS(loop)) * 16;
+-    auto wait_ms = wait_ns / 1000000;
++    if (windowsFutex.valid()) {  
++        if (loop != 0) {
++            auto wait_ns = static_cast<uint64_t>(base::internal::SuggestedDelayNS(loop)) * 16;
++            auto wait_ms = wait_ns / 1000000;
+ 
+-    WaitOnAddress(w, &value, 4, static_cast<DWORD>(wait_ms));
+-  }
++            windowsFutex.WaitOnAddress(w, &value, 4, static_cast<DWORD>(wait_ms));
++        }
++    }
++    else {
++        if (loop == 0) {
++        } else if (loop == 1) {
++            Sleep(0);
++        } else {
++            Sleep(base::internal::SuggestedDelayNS(loop) / 1000000);
++        }
++    }
+ }
+ 
+ void SpinLockWake(std::atomic<int> *w, bool all) {
+-  if (all) {
+-    WakeByAddressAll((void*)w);
+-  } else {
+-    WakeByAddressSingle((void*)w);
+-  }
++    if (windowsFutex.valid()) {  
++        if (all) {
++            windowsFutex.WakeByAddressAll((void*)w);
++        } else {
++            windowsFutex.WakeByAddressSingle((void*)w);
++        }
++    }
+ }
+ 
+ } // namespace internal

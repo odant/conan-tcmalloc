@@ -44,7 +44,7 @@ class TCMallocConan(ConanFile):
         "dll_sign": [True, False]
     }
     default_options = "dll_sign=True"
-    exports_sources = "src/*", "libtcmalloc_minimal.vcxproj.patch", "tcmalloc.rc", "add_envvar_to_disable_patching.patch"
+    exports_sources = "src/*", "libtcmalloc_minimal.vcxproj.patch", "tcmalloc.rc", "add_envvar_to_disable_patching.patch", "fix_win7_compatible.patch"
     no_copy_source = False
     build_policy = "missing"
 
@@ -64,6 +64,8 @@ class TCMallocConan(ConanFile):
     def source(self):
         tools.patch(patch_file="libtcmalloc_minimal.vcxproj.patch")
         tools.patch(patch_file="add_envvar_to_disable_patching.patch")
+        if self.settings.os == "Windows":
+            tools.patch(patch_file="fix_win7_compatible.patch")
 
     def build(self):
         if self.settings.compiler == "Visual Studio":
