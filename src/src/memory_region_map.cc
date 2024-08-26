@@ -108,9 +108,6 @@
 #elif !defined(MAP_FAILED)
 #define MAP_FAILED -1  // the only thing we need from mman.h
 #endif
-#ifdef HAVE_PTHREAD
-#include <pthread.h>   // for pthread_t, pthread_self()
-#endif
 #include <stddef.h>
 
 #include <algorithm>
@@ -121,10 +118,10 @@
 #include "base/googleinit.h"
 #include "base/logging.h"
 #include "base/low_level_alloc.h"
+#include "base/threading.h"
 #include "mmap_hook.h"
 
 #include <gperftools/stacktrace.h>
-#include <gperftools/malloc_hook.h> // For MallocHook::GetCallerStackTrace
 
 using std::max;
 
@@ -132,16 +129,15 @@ using std::max;
 
 int MemoryRegionMap::client_count_ = 0;
 int MemoryRegionMap::max_stack_depth_ = 0;
-MemoryRegionMap::RegionSet* MemoryRegionMap::regions_ = NULL;
-LowLevelAlloc::Arena* MemoryRegionMap::arena_ = NULL;
-SpinLock MemoryRegionMap::lock_(SpinLock::LINKER_INITIALIZED);
-SpinLock MemoryRegionMap::owner_lock_(  // ACQUIRED_AFTER(lock_)
-    SpinLock::LINKER_INITIALIZED);
+MemoryRegionMap::RegionSet* MemoryRegionMap::regions_ = nullptr;
+LowLevelAlloc::Arena* MemoryRegionMap::arena_ = nullptr;
+SpinLock MemoryRegionMap::lock_;
+SpinLock MemoryRegionMap::owner_lock_;  // ACQUIRED_AFTER(lock_)
 int MemoryRegionMap::recursion_count_ = 0;  // GUARDED_BY(owner_lock_)
-pthread_t MemoryRegionMap::lock_owner_tid_;  // GUARDED_BY(owner_lock_)
-int64 MemoryRegionMap::map_size_ = 0;
-int64 MemoryRegionMap::unmap_size_ = 0;
-HeapProfileBucket** MemoryRegionMap::bucket_table_ = NULL;  // GUARDED_BY(lock_)
+uintptr_t MemoryRegionMap::lock_owner_tid_;  // GUARDED_BY(owner_lock_)
+int64_t MemoryRegionMap::map_size_ = 0;
+int64_t MemoryRegionMap::unmap_size_ = 0;
+HeapProfileBucket** MemoryRegionMap::bucket_table_ = nullptr;  // GUARDED_BY(lock_)
 int MemoryRegionMap::num_buckets_ = 0;  // GUARDED_BY(lock_)
 int MemoryRegionMap::saved_buckets_count_ = 0;  // GUARDED_BY(lock_)
 HeapProfileBucket MemoryRegionMap::saved_buckets_[20];  // GUARDED_BY(lock_)
@@ -151,32 +147,9 @@ tcmalloc::MappingHookSpace MemoryRegionMap::mapping_hook_space_;
 
 // ========================================================================= //
 
-// Simple hook into execution of global object constructors,
-// so that we do not call pthread_self() when it does not yet work.
-static bool libpthread_initialized = false;
-REGISTER_MODULE_INITIALIZER(libpthread_initialized_setter,
-                            libpthread_initialized = true);
-
-static inline bool current_thread_is(pthread_t should_be) {
-  // Before main() runs, there's only one thread, so we're always that thread
-  if (!libpthread_initialized) return true;
-  // this starts working only sometime well into global constructor execution:
-  return pthread_equal(pthread_self(), should_be);
+static inline bool current_thread_is(uintptr_t should_be) {
+  return tcmalloc::SelfThreadId() == should_be;
 }
-
-// ========================================================================= //
-
-// Constructor-less place-holder to store a RegionSet in.
-union MemoryRegionMap::RegionSetRep {
-  char rep[sizeof(RegionSet)];
-  void* align_it;  // do not need a better alignment for 'rep' than this
-  RegionSet* region_set() { return reinterpret_cast<RegionSet*>(rep); }
-};
-
-// The bytes where MemoryRegionMap::regions_ will point to.
-// We use RegionSetRep with noop c-tor so that global construction
-// does not interfere.
-static MemoryRegionMap::RegionSetRep regions_rep;
 
 // ========================================================================= //
 
@@ -201,7 +174,7 @@ void MemoryRegionMap::Init(int max_stack_depth, bool use_buckets) NO_THREAD_SAFE
   }
 
   // Set our hooks and make sure they were installed:
-  tcmalloc::HookMMapEvents(&mapping_hook_space_, HandleMappingEvent);
+  tcmalloc::HookMMapEventsWithBacktrace(&mapping_hook_space_, HandleMappingEvent, NeedBacktrace);
 
   // We need to set recursive_insert since the NewArena call itself
   // will already do some allocations with mmap which our hooks will catch
@@ -209,7 +182,7 @@ void MemoryRegionMap::Init(int max_stack_depth, bool use_buckets) NO_THREAD_SAFE
   // Note that Init() can be (and is) sometimes called
   // already from within an mmap/sbrk hook.
   recursive_insert = true;
-  arena_ = LowLevelAlloc::NewArena(0, LowLevelAlloc::DefaultArena());
+  arena_ = LowLevelAlloc::NewArena(nullptr);
   recursive_insert = false;
   HandleSavedRegionsLocked(&InsertRegionLocked);  // flush the buffered ones
     // Can't instead use HandleSavedRegionsLocked(&DoInsertRegionLocked) before
@@ -275,7 +248,7 @@ bool MemoryRegionMap::IsRecordingLocked() {
   return client_count_ > 0;
 }
 
-// Invariants (once libpthread_initialized is true):
+// Invariants:
 //   * While lock_ is not held, recursion_count_ is 0 (and
 //     lock_owner_tid_ is the previous owner, but we don't rely on
 //     that).
@@ -283,7 +256,7 @@ bool MemoryRegionMap::IsRecordingLocked() {
 //     both lock_ and owner_lock_ are held. They may be read under
 //     just owner_lock_.
 //   * At entry and exit of Lock() and Unlock(), the current thread
-//     owns lock_ iff pthread_equal(lock_owner_tid_, pthread_self())
+//     owns lock_ iff lock_owner_tid_ == tcmalloc::SelfThreadId()
 //     && recursion_count_ > 0.
 void MemoryRegionMap::Lock() NO_THREAD_SAFETY_ANALYSIS {
   {
@@ -301,8 +274,7 @@ void MemoryRegionMap::Lock() NO_THREAD_SAFETY_ANALYSIS {
     SpinLockHolder l(&owner_lock_);
     RAW_CHECK(recursion_count_ == 0,
               "Last Unlock didn't reset recursion_count_");
-    if (libpthread_initialized)
-      lock_owner_tid_ = pthread_self();
+    lock_owner_tid_ = tcmalloc::SelfThreadId();
     recursion_count_ = 1;
   }
 }
@@ -530,7 +502,7 @@ void MemoryRegionMap::RestoreSavedBucketsLocked() {
 
 inline void MemoryRegionMap::InitRegionSetLocked() {
   RAW_VLOG(12, "Initializing region set");
-  regions_ = regions_rep.region_set();
+  regions_ = regions_rep_.get();
   recursive_insert = true;
   new (regions_) RegionSet();
   HandleSavedRegionsLocked(&DoInsertRegionLocked);
@@ -567,45 +539,16 @@ inline void MemoryRegionMap::InsertRegionLocked(const Region& region) {
   }
 }
 
-// We strip out different number of stack frames in debug mode
-// because less inlining happens in that case
-#ifdef NDEBUG
-static const int kStripFrames = 1;
-#else
-static const int kStripFrames = 3;
-#endif
-
-void MemoryRegionMap::RecordRegionAddition(const void* start, size_t size) {
+void MemoryRegionMap::RecordRegionAddition(const void* start, size_t size,
+                                           int stack_depth, void** stack) {
   // Record start/end info about this memory acquisition call in a new region:
   Region region;
   region.Create(start, size);
-  // First get the call stack info into the local varible 'region':
-  int depth = 0;
-  // NOTE: libunwind also does mmap and very much likely while holding
-  // it's own lock(s). So some threads may first take libunwind lock,
-  // and then take region map lock (necessary to record mmap done from
-  // inside libunwind). On the other hand other thread(s) may do
-  // normal mmap. Which would call this method to record it. Which
-  // would then proceed with installing that record to region map
-  // while holding region map lock. That may cause mmap from our own
-  // internal allocators, so attempt to unwind in this case may cause
-  // reverse order of taking libuwind and region map locks. Which is
-  // obvious deadlock.
-  //
-  // Thankfully, we can easily detect if we're holding region map lock
-  // and avoid recording backtrace in this (rare and largely
-  // irrelevant) case. By doing this we "declare" that thread needing
-  // both locks must take region map lock last. In other words we do
-  // not allow taking libuwind lock when we already have region map
-  // lock. Note, this is generally impossible when somebody tries to
-  // mix cpu profiling and heap checking/profiling, because cpu
-  // profiler grabs backtraces at arbitrary places. But at least such
-  // combination is rarer and less relevant.
-  if (max_stack_depth_ > 0 && !LockIsHeld()) {
-    depth = MallocHook::GetCallerStackTrace(const_cast<void**>(region.call_stack),
-                                            max_stack_depth_, kStripFrames + 1);
+  stack_depth = std::min(stack_depth, max_stack_depth_);
+  if (stack_depth) {
+    memcpy(region.call_stack, stack, sizeof(*stack)*stack_depth);
   }
-  region.set_call_stack_depth(depth);  // record stack info fully
+  region.set_call_stack_depth(stack_depth);
   RAW_VLOG(10, "New global region %p..%p from %p",
               reinterpret_cast<void*>(region.start_addr),
               reinterpret_cast<void*>(region.end_addr),
@@ -617,7 +560,7 @@ void MemoryRegionMap::RecordRegionAddition(const void* start, size_t size) {
     // This will (eventually) allocate storage for and copy over the stack data
     // from region.call_stack_data_ that is pointed by region.call_stack().
   if (bucket_table_ != NULL) {
-    HeapProfileBucket* b = GetBucket(depth, region.call_stack);
+    HeapProfileBucket* b = GetBucket(stack_depth, region.call_stack);
     ++b->allocs;
     b->alloc_size += size;
     if (!recursive_insert) {
@@ -757,6 +700,10 @@ void MemoryRegionMap::RecordRegionRemovalInBucket(int depth,
   b->free_size += size;
 }
 
+static bool HasAddition(const tcmalloc::MappingEvent& evt) {
+  return evt.after_valid && (evt.after_length != 0);
+}
+
 void MemoryRegionMap::HandleMappingEvent(const tcmalloc::MappingEvent& evt) {
   RAW_VLOG(10, "MMap: before: %p, +%zu; after: %p, +%zu; fd: %d, off: %lld, sbrk: %s",
            evt.before_address, evt.before_valid ? evt.before_length : 0,
@@ -766,9 +713,46 @@ void MemoryRegionMap::HandleMappingEvent(const tcmalloc::MappingEvent& evt) {
   if (evt.before_valid && evt.before_length != 0) {
     RecordRegionRemoval(evt.before_address, evt.before_length);
   }
-  if (evt.after_valid && evt.after_length != 0) {
-    RecordRegionAddition(evt.after_address, evt.after_length);
+  if (HasAddition(evt)) {
+    RecordRegionAddition(evt.after_address, evt.after_length,
+                         evt.stack_depth, evt.stack);
   }
+}
+
+int MemoryRegionMap::NeedBacktrace(const tcmalloc::MappingEvent& evt) {
+  // We only use backtraces when recording additions (see
+  // above). Otherwise, no backtrace is needed.
+  if (!HasAddition(evt)) {
+    return 0;
+  }
+
+  // NOTE: libunwind also does mmap and very much likely while holding
+  // it's own lock(s). So some threads may first take libunwind lock,
+  // and then take region map lock (necessary to record mmap done from
+  // inside libunwind). On the other hand other thread(s) may do
+  // normal mmap. Which would call this method to record it. Which
+  // would then proceed with installing that record to region map
+  // while holding region map lock. That may cause mmap from our own
+  // internal allocators, so attempt to unwind in this case may cause
+  // reverse order of taking libuwind and region map locks. Which is
+  // obvious deadlock.
+  //
+  // Thankfully, we can easily detect if we're holding region map lock
+  // and avoid recording backtrace in this (rare and largely
+  // irrelevant) case. By doing this we "declare" that thread needing
+  // both locks must take region map lock last. In other words we do
+  // not allow taking libuwind lock when we already have region map
+  // lock.
+  //
+  // Note, such rule is in general impossible to enforce, when
+  // somebody tries to mix cpu profiling and heap checking/profiling,
+  // because cpu profiler grabs backtraces at arbitrary places. But at
+  // least such combination is rarer and less relevant.
+  if (LockIsHeld()) {
+    return 0;
+  }
+
+  return max_stack_depth_;
 }
 
 void MemoryRegionMap::LogAllLocked() {

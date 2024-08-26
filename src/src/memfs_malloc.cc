@@ -56,6 +56,7 @@
 #include <gperftools/malloc_extension.h>
 #include "base/basictypes.h"
 #include "base/googleinit.h"
+#include "base/static_storage.h"
 #include "base/sysinfo.h"
 #include "internal_logging.h"
 #include "safe_strerror.h"
@@ -108,16 +109,13 @@ public:
 private:
   void* AllocInternal(size_t size, size_t *actual_size, size_t alignment);
 
-  int64 big_page_size_;
+  int64_t big_page_size_;
   int hugetlb_fd_;       // file descriptor for hugetlb
   off_t hugetlb_base_;
 
   SysAllocator* fallback_;  // Default system allocator to fall back to.
 };
-static union {
-  char buf[sizeof(HugetlbSysAllocator)];
-  void *ptr;
-} hugetlb_space;
+static tcmalloc::StaticStorage<HugetlbSysAllocator> hugetlb_space;
 
 // No locking needed here since we assume that tcmalloc calls
 // us with an internal lock held (see tcmalloc/system-alloc.cc).
@@ -259,7 +257,7 @@ bool HugetlbSysAllocator::Initialize() {
         tcmalloc::SafeStrError(errno).c_str());
     return false;
   }
-  int64 page_size = sfs.f_bsize;
+  int64_t page_size = sfs.f_bsize;
 
   hugetlb_fd_ = hugetlb_fd;
   big_page_size_ = page_size;
@@ -270,8 +268,7 @@ bool HugetlbSysAllocator::Initialize() {
 REGISTER_MODULE_INITIALIZER(memfs_malloc, {
   if (FLAGS_memfs_malloc_path.length()) {
     SysAllocator* alloc = MallocExtension::instance()->GetSystemAllocator();
-    HugetlbSysAllocator* hp =
-      new (hugetlb_space.buf) HugetlbSysAllocator(alloc);
+    HugetlbSysAllocator* hp = hugetlb_space.Construct(alloc);
     if (hp->Initialize()) {
       MallocExtension::instance()->SetSystemAllocator(hp);
     }

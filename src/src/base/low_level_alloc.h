@@ -41,26 +41,14 @@
 #include <stddef.h>             // for size_t
 #include "base/basictypes.h"
 
-#ifndef __APPLE__
-// As of now, whatever clang version apple ships (clang-1205.0.22.11),
-// somehow miscompiles LowLevelAlloc when we try this section
-// thingy. Thankfully, we only need this section stuff heap leak
-// checker which is Linux-only anyways.
-#define ATTR_MALLOC_SECTION ATTRIBUTE_SECTION(malloc_hook)
-#else
-#define ATTR_MALLOC_SECTION
-#endif
-
 class LowLevelAlloc {
  public:
   class PagesAllocator {
   public:
     virtual ~PagesAllocator();
-    virtual void *MapPages(int32 flags, size_t size) = 0;
-    virtual void UnMapPages(int32 flags, void *addr, size_t size) = 0;
+    virtual void *MapPages(size_t size) = 0;
+    virtual void UnMapPages(void *addr, size_t size) = 0;
   };
-
-  static PagesAllocator *GetDefaultPagesAllocator(void);
 
   struct Arena;       // an arena from which memory may be allocated
 
@@ -70,48 +58,24 @@ class LowLevelAlloc {
   // Returns 0 if passed request==0.
   // Does not return 0 under other circumstances; it crashes if memory
   // is not available.
-  static void *Alloc(size_t request)
-    ATTR_MALLOC_SECTION;
-  static void *AllocWithArena(size_t request, Arena *arena)
-    ATTR_MALLOC_SECTION;
+  //
+  // Passing nullptr arena implies use of DefaultArena
+  static void *AllocWithArena(size_t request, Arena *arena);
+  // Equivalent to AllocWithArena(request, nullptr)
+  static void *Alloc(size_t request);
 
   // Deallocates a region of memory that was previously allocated with
   // Alloc().   Does nothing if passed 0.   "s" must be either 0,
   // or must have been returned from a call to Alloc() and not yet passed to
   // Free() since that call to Alloc().  The space is returned to the arena
   // from which it was allocated.
-  static void Free(void *s) ATTR_MALLOC_SECTION;
+  static void Free(void *s);
 
-    // ATTR_MALLOC_SECTION for Alloc* and Free
-    // are to put all callers of MallocHook::Invoke* in this module
-    // into special section,
-    // so that MallocHook::GetCallerStackTrace can function accurately.
-
-  // Create a new arena.
-  // The root metadata for the new arena is allocated in the
-  // meta_data_arena; the DefaultArena() can be passed for meta_data_arena.
-  // These values may be ored into flags:
-  enum {
-    // Report calls to Alloc() and Free() via the MallocHook interface.
-    // Set in the DefaultArena.
-    kCallMallocHook = 0x0001,
-
-    // Make calls to Alloc(), Free() be async-signal-safe.  Not set in
-    // DefaultArena().
-    kAsyncSignalSafe = 0x0002,
-
-    // When used with DefaultArena(), the NewArena() and DeleteArena() calls
-    // obey the flags given explicitly in the NewArena() call, even if those
-    // flags differ from the settings in DefaultArena().  So the call
-    // NewArena(kAsyncSignalSafe, DefaultArena()) is itself async-signal-safe,
-    // as well as generatating an arena that provides async-signal-safe
-    // Alloc/Free.
-  };
-  static Arena *NewArena(int32 flags, Arena *meta_data_arena);
+  static Arena *NewArena(Arena *meta_data_arena);
 
   // note: pages allocator will never be destroyed and allocated pages will never be freed
-  // When allocator is NULL, it's same as NewArena
-  static Arena *NewArenaWithCustomAlloc(int32 flags, Arena *meta_data_arena, PagesAllocator *allocator);
+  // When allocator is nullptr, it's same as NewArena
+  static Arena *NewArenaWithCustomAlloc(Arena *meta_data_arena, PagesAllocator *allocator);
 
   // Destroys an arena allocated by NewArena and returns true,
   // provided no allocated blocks remain in the arena.
@@ -120,10 +84,10 @@ class LowLevelAlloc {
   // It is illegal to attempt to destroy the DefaultArena().
   static bool DeleteArena(Arena *arena);
 
-  // The default arena that always exists.
-  static Arena *DefaultArena();
-
  private:
+  static Arena *DefaultArena();
+  static PagesAllocator *GetDefaultPagesAllocator(void);
+
   LowLevelAlloc();      // no instances
 };
 

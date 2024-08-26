@@ -63,14 +63,6 @@
 #define WRITE_TO_STDERR(buf, len) write(STDERR_FILENO, buf, len)
 #endif
 
-// MSVC and mingw define their own, safe version of vnsprintf (the
-// windows one in broken) in port.cc.  Everyone else can use the
-// version here.  We had to give it a unique name for windows.
-#ifndef _WIN32
-# define perftools_vsnprintf vsnprintf
-#endif
-
-
 // We log all messages at this log-level and below.
 // INFO == -1, WARNING == -2, ERROR == -3, FATAL == -4
 DECLARE_int32(verbose);
@@ -147,27 +139,6 @@ enum { DEBUG_MODE = 1 };
 #define CHECK_GE(val1, val2) CHECK_OP(>=, val1, val2)
 #define CHECK_GT(val1, val2) CHECK_OP(> , val1, val2)
 
-// Synonyms for CHECK_* that are used in some unittests.
-#define EXPECT_EQ(val1, val2) CHECK_EQ(val1, val2)
-#define EXPECT_NE(val1, val2) CHECK_NE(val1, val2)
-#define EXPECT_LE(val1, val2) CHECK_LE(val1, val2)
-#define EXPECT_LT(val1, val2) CHECK_LT(val1, val2)
-#define EXPECT_GE(val1, val2) CHECK_GE(val1, val2)
-#define EXPECT_GT(val1, val2) CHECK_GT(val1, val2)
-#define ASSERT_EQ(val1, val2) EXPECT_EQ(val1, val2)
-#define ASSERT_NE(val1, val2) EXPECT_NE(val1, val2)
-#define ASSERT_LE(val1, val2) EXPECT_LE(val1, val2)
-#define ASSERT_LT(val1, val2) EXPECT_LT(val1, val2)
-#define ASSERT_GE(val1, val2) EXPECT_GE(val1, val2)
-#define ASSERT_GT(val1, val2) EXPECT_GT(val1, val2)
-// As are these variants.
-#define EXPECT_TRUE(cond)     CHECK(cond)
-#define EXPECT_FALSE(cond)    CHECK(!(cond))
-#define EXPECT_STREQ(a, b)    CHECK(strcmp(a, b) == 0)
-#define ASSERT_TRUE(cond)     EXPECT_TRUE(cond)
-#define ASSERT_FALSE(cond)    EXPECT_FALSE(cond)
-#define ASSERT_STREQ(a, b)    EXPECT_STREQ(a, b)
-
 // Used for (libc) functions that return -1 and set errno
 #define CHECK_ERR(invocation)  PCHECK((invocation) != -1)
 
@@ -199,7 +170,7 @@ inline void LogPrintf(int severity, const char* pat, va_list ap) {
   // We write directly to the stderr file descriptor and avoid FILE
   // buffering because that may invoke malloc()
   char buf[600];
-  perftools_vsnprintf(buf, sizeof(buf)-1, pat, ap);
+  vsnprintf(buf, sizeof(buf)-1, pat, ap);
   if (buf[0] != '\0' && buf[strlen(buf)-1] != '\n') {
     assert(strlen(buf)+1 < sizeof(buf));
     strcat(buf, "\n");

@@ -1,5 +1,5 @@
 // -*- Mode: C++; c-basic-offset: 2; indent-tabs-mode: nil -*-
-// Copyright (c) 2014, gperftools Contributors
+// Copyright (c) 2014, 2024, gperftools Contributors
 // All rights reserved.
 //
 // Redistribution and use in source and binary forms, with or without
@@ -31,8 +31,6 @@
 #ifndef MAYBE_EMERGENCY_MALLOC_H
 #define MAYBE_EMERGENCY_MALLOC_H
 
-#include "config.h"
-
 #ifdef ENABLE_EMERGENCY_MALLOC
 
 #include "emergency_malloc.h"
@@ -40,16 +38,15 @@
 #else
 
 namespace tcmalloc {
-  static inline void *EmergencyMalloc(size_t size) {return NULL;}
-  static inline void EmergencyFree(void *p) {}
-  static inline void *EmergencyCalloc(size_t n, size_t elem_size) {return NULL;}
-  static inline void *EmergencyRealloc(void *old_ptr, size_t new_size) {return NULL;}
 
-  static inline bool IsEmergencyPtr(const void *_ptr) {
-    return false;
-  }
-}
+static inline void *EmergencyMalloc(size_t size) {return nullptr;}
+static inline void EmergencyFree(void *p) {}
+static inline void *EmergencyCalloc(size_t n, size_t elem_size) {return nullptr;}
+static inline void *EmergencyRealloc(void *old_ptr, size_t new_size) {return nullptr;}
+static inline bool IsEmergencyPtr(const void *_ptr) {return false;}
 
-#endif // ENABLE_EMERGENCY_MALLOC
+}  // namespace tcmalloc
 
-#endif
+#endif  // ENABLE_EMERGENCY_MALLOC
+
+#endif  // MAYBE_EMERGENCY_MALLOC_H

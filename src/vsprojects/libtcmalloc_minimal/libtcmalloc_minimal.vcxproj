@@ -30,46 +30,47 @@
     <UseNativeEnvironment>true</UseNativeEnvironment>
     <ProjectGuid>{55E2B3AE-3CA1-4DB6-97F7-0A044D6F446F}</ProjectGuid>
     <Keyword>Win32Proj</Keyword>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release-Patch|Win32'" Label="Configuration">
     <ConfigurationType>DynamicLibrary</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
-    <PlatformToolset>v140</PlatformToolset>
+    <PlatformToolset>v142</PlatformToolset>
     <CharacterSet>Unicode</CharacterSet>
     <WholeProgramOptimization>true</WholeProgramOptimization>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release-Override|Win32'" Label="Configuration">
     <ConfigurationType>StaticLibrary</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
-    <PlatformToolset>v140</PlatformToolset>
+    <PlatformToolset>v142</PlatformToolset>
     <CharacterSet>Unicode</CharacterSet>
     <WholeProgramOptimization>true</WholeProgramOptimization>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release-Patch|x64'" Label="Configuration">
     <ConfigurationType>DynamicLibrary</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
-    <PlatformToolset>v140</PlatformToolset>
+    <PlatformToolset>v142</PlatformToolset>
     <CharacterSet>Unicode</CharacterSet>
     <WholeProgramOptimization>true</WholeProgramOptimization>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release-Override|x64'" Label="Configuration">
     <ConfigurationType>StaticLibrary</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
-    <PlatformToolset>v140</PlatformToolset>
+    <PlatformToolset>v142</PlatformToolset>
     <CharacterSet>Unicode</CharacterSet>
     <WholeProgramOptimization>true</WholeProgramOptimization>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
     <ConfigurationType>DynamicLibrary</ConfigurationType>
     <UseDebugLibraries>true</UseDebugLibraries>
-    <PlatformToolset>v140</PlatformToolset>
+    <PlatformToolset>v142</PlatformToolset>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
     <ConfigurationType>DynamicLibrary</ConfigurationType>
     <UseDebugLibraries>true</UseDebugLibraries>
-    <PlatformToolset>v140</PlatformToolset>
+    <PlatformToolset>v142</PlatformToolset>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
@@ -120,6 +121,7 @@
       <PreprocessorDefinitions>_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <WarningLevel>Level3</WarningLevel>
       <EnforceTypeConversionRules>true</EnforceTypeConversionRules>
+      <LanguageStandard>stdcpp17</LanguageStandard>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -130,6 +132,7 @@
       <PreprocessorDefinitions>_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <WarningLevel>Level3</WarningLevel>
       <EnforceTypeConversionRules>true</EnforceTypeConversionRules>
+      <LanguageStandard>stdcpp17</LanguageStandard>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -142,6 +145,7 @@
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <BufferSecurityCheck>false</BufferSecurityCheck>
       <EnforceTypeConversionRules>true</EnforceTypeConversionRules>
+      <LanguageStandard>stdcpp17</LanguageStandard>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -157,6 +161,7 @@
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <BufferSecurityCheck>false</BufferSecurityCheck>
       <EnforceTypeConversionRules>true</EnforceTypeConversionRules>
+      <LanguageStandard>stdcpp17</LanguageStandard>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -171,6 +176,7 @@
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <BufferSecurityCheck>false</BufferSecurityCheck>
       <EnforceTypeConversionRules>true</EnforceTypeConversionRules>
+      <LanguageStandard>stdcpp17</LanguageStandard>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -186,6 +192,7 @@
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <BufferSecurityCheck>false</BufferSecurityCheck>
       <EnforceTypeConversionRules>true</EnforceTypeConversionRules>
+      <LanguageStandard>stdcpp17</LanguageStandard>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -198,15 +205,16 @@
     <ClCompile Include="..\..\src\base\logging.cc" />
     <ClCompile Include="..\..\src\base\spinlock.cc" />
     <ClCompile Include="..\..\src\base\spinlock_internal.cc" />
+    <ClCompile Include="..\..\src\base\generic_writer.cc" />
     <ClCompile Include="..\..\src\base\sysinfo.cc" />
+    <ClCompile Include="..\..\src\base\proc_maps_iterator.cc" />
     <ClCompile Include="..\..\src\central_freelist.cc" />
     <ClCompile Include="..\..\src\common.cc" />
-    <ClCompile Include="..\..\src\fake_stacktrace_scope.cc" />
     <ClCompile Include="..\..\src\internal_logging.cc" />
+    <ClCompile Include="..\..\src\malloc_backtrace.cc" />
     <ClCompile Include="..\..\src\malloc_extension.cc" />
     <ClCompile Include="..\..\src\malloc_hook.cc" />
     <ClCompile Include="..\..\src\page_heap.cc" />
-    <ClCompile Include="..\..\src\raw_printer.cc" />
     <ClCompile Include="..\..\src\sampler.cc" />
     <ClCompile Include="..\..\src\span.cc" />
     <ClCompile Include="..\..\src\stacktrace.cc" />
@@ -214,6 +222,7 @@
     <ClCompile Include="..\..\src\static_vars.cc" />
     <ClCompile Include="..\..\src\symbolize.cc" />
     <ClCompile Include="..\..\src\thread_cache.cc" />
+    <ClCompile Include="..\..\src\thread_cache_ptr.cc" />
     <ClCompile Include="..\..\src\windows\ia32_modrm_map.cc" />
     <ClCompile Include="..\..\src\windows\ia32_opcode_map.cc" />
     <ClCompile Include="..\..\src\windows\mini_disassembler.cc" />
@@ -239,7 +248,6 @@
     <ClInclude Include="..\..\src\base\googleinit.h" />
     <ClInclude Include="..\..\src\base\linked_list.h" />
     <ClInclude Include="..\..\src\base\logging.h" />
-    <ClInclude Include="..\..\src\base\mutex.h" />
     <ClInclude Include="..\..\src\base\spinlock.h" />
     <ClInclude Include="..\..\src\base\spinlock_internal.h" />
     <ClInclude Include="..\..\src\base\spinlock_linux-inl.h" />
@@ -250,6 +258,7 @@
     <ClInclude Include="..\..\src\base\thread_annotations.h" />
     <ClInclude Include="..\..\src\central_freelist.h" />
     <ClInclude Include="..\..\src\common.h" />
+    <ClInclude Include="..\..\src\gperftools\malloc_backtrace.h" />
     <ClInclude Include="..\..\src\gperftools\malloc_extension.h" />
     <ClInclude Include="..\..\src\gperftools\malloc_hook.h" />
     <ClInclude Include="..\..\src\gperftools\profiler.h" />
@@ -260,7 +269,6 @@
     <ClInclude Include="..\..\src\pagemap.h" />
     <ClInclude Include="..\..\src\page_heap.h" />
     <ClInclude Include="..\..\src\page_heap_allocator.h" />
-    <ClInclude Include="..\..\src\raw_printer.h" />
     <ClInclude Include="..\..\src\sampler.h" />
     <ClInclude Include="..\..\src\span.h" />
     <ClInclude Include="..\..\src\stacktrace_config.h" />
@@ -269,9 +277,10 @@
     <ClInclude Include="..\..\src\static_vars.h" />
     <ClInclude Include="..\..\src\symbolize.h" />
     <ClInclude Include="..\..\src\system-alloc.h" />
-    <ClInclude Include="..\..\src\tcmalloc.h" />
+    <ClInclude Include="..\..\src\tcmalloc_internal.h" />
     <ClInclude Include="..\..\src\thread_cache.h" />
-    <ClInclude Include="..\..\src\windows\config.h" />
+    <ClInclude Include="..\..\src\thread_cache_ptr.h" />
+    <ClInclude Include="..\config.h" />
     <ClInclude Include="..\..\src\windows\mini_disassembler.h" />
     <ClInclude Include="..\..\src\windows\mini_disassembler_types.h" />
     <ClInclude Include="..\..\src\windows\port.h" />
@@ -280,4 +289,5 @@
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>
+  <Import Project="$(MSBuildProjectDirectory)\..\common.vcxproj.props" />
 </Project>

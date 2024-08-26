@@ -42,6 +42,8 @@
 #ifndef TCMALLOC_LIBC_OVERRIDE_REDEFINE_H_
 #define TCMALLOC_LIBC_OVERRIDE_REDEFINE_H_
 
+#include <gperftools/tcmalloc.h>
+
 void* operator new(size_t size)                  { return tc_new(size);       }
 void operator delete(void* p) CPP_NOTHROW        { tc_delete(p);              }
 void* operator new[](size_t size)                { return tc_newarray(size);  }
@@ -63,8 +65,6 @@ void operator delete[](void* ptr, const std::nothrow_t& nt) CPP_NOTHROW {
 void operator delete(void* p, size_t s) CPP_NOTHROW  { tc_delete_sized(p, s);     }
 void operator delete[](void* p, size_t s) CPP_NOTHROW{ tc_deletearray_sized(p, s);}
 #endif
-
-#if defined(ENABLE_ALIGNED_NEW_DELETE)
 
 void* operator new(size_t size, std::align_val_t al) {
   return tc_new_aligned(size, al);
@@ -99,8 +99,6 @@ void operator delete[](void* p, size_t s, std::align_val_t al) CPP_NOTHROW {
   tc_deletearray_sized_aligned(p, s, al);
 }
 #endif
-
-#endif // defined(ENABLE_ALIGNED_NEW_DELETE)
 
 extern "C" {
   void* malloc(size_t s)                         { return tc_malloc(s);       }

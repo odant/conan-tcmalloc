@@ -41,11 +41,9 @@
 #ifndef GOOGLE_BASE_WINDOWS_H_
 #define GOOGLE_BASE_WINDOWS_H_
 
-/* You should never include this file directly, but always include it
-   from either config.h (MSVC) or mingw.h (MinGW/msys). */
-#if !defined(GOOGLE_PERFTOOLS_WINDOWS_CONFIG_H_) && \
-    !defined(GOOGLE_PERFTOOLS_WINDOWS_MINGW_H_)
-# error "port.h should only be included from config.h or mingw.h"
+/* You should never include this file directly, but always include it from config.h */
+#ifndef GPERFTOOLS_CONFIG_H_
+# error "port.h should only be included from config.h"
 #endif
 
 #ifdef _WIN32
@@ -53,6 +51,29 @@
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN  /* We always want minimal includes */
 #endif
+
+// windows.h whatevevs defines min and max preprocessor macros and
+// that breaks ::max() in various places (like numeric_limits)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+
+// Our spinlock futex-like wait support depends on windows 8
+// feature. So we ask for windows 8 APIs.
+//
+// https://learn.microsoft.com/en-us/cpp/porting/modifying-winver-and-win32-winnt?view=msvc-170
+#ifndef _WIN32_WINNT
+# define _WIN32_WINNT 0x0602
+#endif
+
+// We want to make sure not to ever try to #include heap-checker.h
+#define NO_HEAP_CHECK 1
+
+#if defined(__MINGW32__) && __MSVCRT_VERSION__ < 0x0700
+// Older version of the mingw msvcrt don't define _aligned_malloc
+# define PERFTOOLS_NO_ALIGNED_MALLOC 1
+#endif
+
 #include <windows.h>
 #include <io.h>              /* because we so often use open/close/etc */
 #include <direct.h>          /* for _getcwd */
@@ -108,61 +129,6 @@ typedef intptr_t ssize_t;
 
 /* ----------------------------------- THREADS */
 
-#ifndef HAVE_PTHREAD   /* not true for MSVC, but may be true for MSYS */
-typedef DWORD pthread_t;
-typedef DWORD pthread_key_t;
-
-inline pthread_t pthread_self(void) {
-  return GetCurrentThreadId();
-}
-
-#ifdef __cplusplus
-inline bool pthread_equal(pthread_t left, pthread_t right) {
-  return left == right;
-}
-
-/*
- * windows/port.h defines compatibility APIs for several .h files, which
- * we therefore shouldn't be #including directly.  This hack keeps us from
- * doing so.  TODO(csilvers): do something more principled.
- */
-#define HAVE_PERFTOOLS_PTHREAD_KEYS
-
-EXTERN_C pthread_key_t PthreadKeyCreate(void (*destr_fn)(void*));  /* port.cc */
-
-inline int perftools_pthread_key_create(pthread_key_t *pkey,
-                                        void (*destructor)(void*)) {
-  pthread_key_t key = PthreadKeyCreate(destructor);
-  if (key != TLS_OUT_OF_INDEXES) {
-    *(pkey) = key;
-    return 0;
-  } else {
-    return GetLastError();
-  }
-}
-
-inline void* perftools_pthread_getspecific(DWORD key) {
-  DWORD err = GetLastError();
-  void* rv = TlsGetValue(key);
-  if (err) SetLastError(err);
-  return rv;
-}
-
-inline int perftools_pthread_setspecific(pthread_key_t key, const void *value) {
-  if (TlsSetValue(key, (LPVOID)value))
-    return 0;
-  else
-    return GetLastError();
-}
-
-#endif  /* __cplusplus */
-
-inline void sched_yield(void) {
-  Sleep(0);
-}
-
-#endif  /* HAVE_PTHREAD */
-
 /*
  * __declspec(thread) isn't usable in a dll opened via LoadLibrary().
  * But it doesn't work to LoadLibrary() us anyway, because of all the
@@ -208,29 +174,6 @@ inline void *sbrk(intptr_t increment) {
   return (void*)-1;
 }
 
-
-/* ----------------------------------- STRING ROUTINES */
-
-/*
- * We can't just use _vsnprintf and _snprintf as drop-in-replacements,
- * because they don't always NUL-terminate. :-(  We also can't use the
- * name vsnprintf, since windows defines that (but not snprintf (!)).
- */
-#if defined(_MSC_VER) && _MSC_VER >= 1400
-/* We can use safe CRT functions, which the required functionality */
-inline int perftools_vsnprintf(char *str, size_t size, const char *format,
-                               va_list ap) {
-  return vsnprintf_s(str, size, _TRUNCATE, format, ap);
-}
-#else
-inline int perftools_vsnprintf(char *str, size_t size, const char *format,
-                               va_list ap) {
-  if (size == 0)        /* not even room for a \0? */
-    return -1;        /* not what C99 says to do, but what windows does */
-  str[size-1] = '\0';
-  return _vsnprintf(str, size-1, format, ap);
-}
-#endif
 
 /* ----------------------------------- FILE IO */
 
@@ -282,15 +225,6 @@ inline int pclose(FILE *stream) {
 EXTERN_C PERFTOOLS_DLL_DECL void WriteToStderr(const char* buf, int len);
 
 /* ----------------------------------- SYSTEM/PROCESS */
-
-#ifndef HAVE_PID_T
-typedef int pid_t;
-#endif
-
-#if __STDC__ && !defined(__MINGW32__)
-inline pid_t getpid(void) { return _getpid(); }
-#endif
-inline pid_t getppid(void) { return 0; }
 
 /* Handle case when poll is used to simulate sleep. */
 inline int poll(struct pollfd* fds, int nfds, int timeout) {

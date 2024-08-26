@@ -35,19 +35,16 @@
 // it should not be used when performance is key.
 
 #include "base/low_level_alloc.h"
+
 #include "base/dynamic_annotations.h"
-#include "base/spinlock.h"
 #include "base/logging.h"
+#include "base/spinlock.h"
+#include "base/static_storage.h"
 
 #include "malloc_hook-inl.h"
 #include <gperftools/malloc_hook.h>
 
 #include "mmap_hook.h"
-
-#ifdef HAVE_UNISTD_H
-#include <unistd.h>
-#endif
-#include <new>                   // for placement-new
 
 // A first-fit allocator with amortized logarithmic free() time.
 
@@ -57,30 +54,39 @@ LowLevelAlloc::PagesAllocator::~PagesAllocator() {
 // ---------------------------------------------------------------------------
 static const int kMaxLevel = 30;
 
-// We put this class-only struct in a namespace to avoid polluting the
-// global namespace with this struct name (thus risking an ODR violation).
-namespace low_level_alloc_internal {
-  // This struct describes one allocated block, or one free block.
-  struct AllocList {
-    struct Header {
-      intptr_t size;  // size of entire region, including this field. Must be
-                      // first.  Valid in both allocated and unallocated blocks
-      intptr_t magic; // kMagicAllocated or kMagicUnallocated xor this
-      LowLevelAlloc::Arena *arena; // pointer to parent arena
-      void *dummy_for_alignment;   // aligns regions to 0 mod 2*sizeof(void*)
-    } header;
+namespace {
 
-    // Next two fields: in unallocated blocks: freelist skiplist data
-    //                  in allocated blocks: overlaps with client data
-    int levels;           // levels in skiplist used
-    AllocList *next[kMaxLevel];   // actually has levels elements.
-                                  // The AllocList node may not have room for
-                                  // all kMaxLevel entries.  See max_fit in
-                                  // LLA_SkiplistLevels()
-  };
-}
-using low_level_alloc_internal::AllocList;
+// This struct describes one allocated block, or one free block.
+struct AllocList {
+  constexpr AllocList() {}
 
+  struct Header {
+    intptr_t size;  // size of entire region, including this field. Must be
+    // first.  Valid in both allocated and unallocated blocks
+    intptr_t magic; // kMagicAllocated or kMagicUnallocated xor this
+    LowLevelAlloc::Arena *arena; // pointer to parent arena
+    void *dummy_for_alignment;   // aligns regions to 0 mod 2*sizeof(void*)
+  } header{};
+
+  // Next two fields: in unallocated blocks: freelist skiplist data
+  //                  in allocated blocks: overlaps with client data
+
+  // levels in skiplist used
+  int levels{};
+  // actually has levels elements.  The AllocList node may not have
+  // room for all kMaxLevel entries.  See max_fit in
+  // LLA_SkiplistLevels()
+  AllocList *next[kMaxLevel]{};
+};
+
+class DefaultPagesAllocator : public LowLevelAlloc::PagesAllocator {
+public:
+  virtual ~DefaultPagesAllocator() {};
+  void *MapPages(size_t size) override;
+  void UnMapPages(void *addr, size_t size) override;
+};
+
+}  // namespace
 
 // ---------------------------------------------------------------------------
 // A trivial skiplist implementation.  This is used to keep the freelist
@@ -101,7 +107,7 @@ static int IntLog2(size_t size, size_t base) {
 
 // Return a random integer n:  p(n)=1/(2**n) if 1 <= n; p(n)=0 if n < 1.
 static int Random() {
-  static uint32 r = 1;         // no locking---it's not critical
+  static uint32_t r = 1;         // no locking---it's not critical
   int result = 1;
   while ((((r = r*1103515245 + 12345) >> 30) & 1) == 0) {
     result++;
@@ -178,152 +184,63 @@ static void LLA_SkiplistDelete(AllocList *head, AllocList *e,
 // Arena implementation
 
 struct LowLevelAlloc::Arena {
-  Arena() : mu(SpinLock::LINKER_INITIALIZED) {} // does nothing; for static init
-  explicit Arena(int) : pagesize(0) {}  // set pagesize to zero explicitly
-                                        // for non-static init
+  Arena();
 
-  SpinLock mu;            // protects freelist, allocation_count,
-                          // pagesize, roundup, min_size
-  AllocList freelist;     // head of free list; sorted by addr (under mu)
-  int32 allocation_count; // count of allocated blocks (under mu)
-  int32 flags;            // flags passed to NewArena (ro after init)
-  size_t pagesize;        // ==getpagesize()  (init under mu, then ro)
-  size_t roundup;         // lowest power of 2 >= max(16,sizeof (AllocList))
-                          // (init under mu, then ro)
-  size_t min_size;        // smallest allocation block size
-                          // (init under mu, then ro)
+  SpinLock mu;                // protects freelist, allocation_count,
+                              // pagesize, roundup, min_size
+
+  AllocList freelist;         // head of free list; sorted by addr (under mu)
+  int32_t allocation_count;   // count of allocated blocks (under mu)
+  size_t pagesize;            // ==getpagesize()  (init under mu, then ro)
+  size_t roundup;             // lowest power of 2 >= max(16,sizeof (AllocList))
+                              // (init under mu, then ro)
+  size_t min_size;            // smallest allocation block size
+                              // (init under mu, then ro)
   PagesAllocator *allocator;
+
 };
-
-// The default arena, which is used when 0 is passed instead of an Arena
-// pointer.
-static struct LowLevelAlloc::Arena default_arena;
-
-// Non-malloc-hooked arenas: used only to allocate metadata for arenas that
-// do not want malloc hook reporting, so that for them there's no malloc hook
-// reporting even during arena creation.
-static struct LowLevelAlloc::Arena unhooked_arena;
-static struct LowLevelAlloc::Arena unhooked_async_sig_safe_arena;
-
-namespace {
-
-  class DefaultPagesAllocator : public LowLevelAlloc::PagesAllocator {
-  public:
-    virtual ~DefaultPagesAllocator() {};
-    virtual void *MapPages(int32 flags, size_t size);
-    virtual void UnMapPages(int32 flags, void *addr, size_t size);
-  };
-
-}
 
 // magic numbers to identify allocated and unallocated blocks
 static const intptr_t kMagicAllocated = 0x4c833e95;
 static const intptr_t kMagicUnallocated = ~kMagicAllocated;
 
-namespace {
-  class SCOPED_LOCKABLE ArenaLock {
-   public:
-    explicit ArenaLock(LowLevelAlloc::Arena *arena)
-        EXCLUSIVE_LOCK_FUNCTION(arena->mu)
-        : left_(false), mask_valid_(false), arena_(arena) {
-      if ((arena->flags & LowLevelAlloc::kAsyncSignalSafe) != 0) {
-      // We've decided not to support async-signal-safe arena use until
-      // there a demonstrated need.  Here's how one could do it though
-      // (would need to be made more portable).
-#if 0
-        sigset_t all;
-        sigfillset(&all);
-        this->mask_valid_ =
-            (pthread_sigmask(SIG_BLOCK, &all, &this->mask_) == 0);
-#else
-        RAW_CHECK(false, "We do not yet support async-signal-safe arena.");
-#endif
-      }
-      this->arena_->mu.Lock();
-    }
-    ~ArenaLock() { RAW_CHECK(this->left_, "haven't left Arena region"); }
-    void Leave() UNLOCK_FUNCTION() {
-      this->arena_->mu.Unlock();
-#if 0
-      if (this->mask_valid_) {
-        pthread_sigmask(SIG_SETMASK, &this->mask_, 0);
-      }
-#endif
-      this->left_ = true;
-    }
-   private:
-    bool left_;       // whether left region
-    bool mask_valid_;
-#if 0
-    sigset_t mask_;   // old mask of blocked signals
-#endif
-    LowLevelAlloc::Arena *arena_;
-    DISALLOW_COPY_AND_ASSIGN(ArenaLock);
-  };
-} // anonymous namespace
-
 // create an appropriate magic number for an object at "ptr"
 // "magic" should be kMagicAllocated or kMagicUnallocated
-inline static intptr_t Magic(intptr_t magic, AllocList::Header *ptr) {
+static intptr_t Magic(intptr_t magic, AllocList::Header *ptr) {
   return magic ^ reinterpret_cast<intptr_t>(ptr);
 }
 
-// Initialize the fields of an Arena
-static void ArenaInit(LowLevelAlloc::Arena *arena) {
-  if (arena->pagesize == 0) {
-    arena->pagesize = getpagesize();
-    // Round up block sizes to a power of two close to the header size.
-    arena->roundup = 16;
-    while (arena->roundup < sizeof (arena->freelist.header)) {
-      arena->roundup += arena->roundup;
-    }
-    // Don't allocate blocks less than twice the roundup size to avoid tiny
-    // free blocks.
-    arena->min_size = 2 * arena->roundup;
-    arena->freelist.header.size = 0;
-    arena->freelist.header.magic =
-        Magic(kMagicUnallocated, &arena->freelist.header);
-    arena->freelist.header.arena = arena;
-    arena->freelist.levels = 0;
-    memset(arena->freelist.next, 0, sizeof (arena->freelist.next));
-    arena->allocation_count = 0;
-    if (arena == &default_arena) {
-      // Default arena should be hooked, e.g. for heap-checker to trace
-      // pointer chains through objects in the default arena.
-      arena->flags = LowLevelAlloc::kCallMallocHook;
-    } else if (arena == &unhooked_async_sig_safe_arena) {
-      arena->flags = LowLevelAlloc::kAsyncSignalSafe;
-    } else {
-      arena->flags = 0;   // other arenas' flags may be overridden by client,
-                          // but unhooked_arena will have 0 in 'flags'.
-    }
-    arena->allocator = LowLevelAlloc::GetDefaultPagesAllocator();
+LowLevelAlloc::Arena::Arena() {
+  pagesize = getpagesize();
+  // Round up block sizes to a power of two close to the header size.
+  roundup = 16;
+  while (roundup < sizeof (freelist.header)) {
+    roundup += roundup;
   }
+  // Don't allocate blocks less than twice the roundup size to avoid tiny
+  // free blocks.
+  min_size = 2 * roundup;
+  freelist.header.size = 0;
+  freelist.header.magic =
+    Magic(kMagicUnallocated, &freelist.header);
+  freelist.header.arena = this;
+  freelist.levels = 0;
+  memset(freelist.next, 0, sizeof (freelist.next));
+  allocation_count = 0;
+  allocator = LowLevelAlloc::GetDefaultPagesAllocator();
 }
 
 // L < meta_data_arena->mu
-LowLevelAlloc::Arena *LowLevelAlloc::NewArena(int32 flags,
-                                              Arena *meta_data_arena) {
-  return NewArenaWithCustomAlloc(flags, meta_data_arena, NULL);
+LowLevelAlloc::Arena *LowLevelAlloc::NewArena(Arena *meta_data_arena) {
+  return NewArenaWithCustomAlloc(meta_data_arena, nullptr);
 }
 
 // L < meta_data_arena->mu
-LowLevelAlloc::Arena *LowLevelAlloc::NewArenaWithCustomAlloc(int32 flags,
-                                                             Arena *meta_data_arena,
+LowLevelAlloc::Arena *LowLevelAlloc::NewArenaWithCustomAlloc(Arena *meta_data_arena,
                                                              PagesAllocator *allocator) {
-  RAW_CHECK(meta_data_arena != 0, "must pass a valid arena");
-  if (meta_data_arena == &default_arena) {
-    if ((flags & LowLevelAlloc::kAsyncSignalSafe) != 0) {
-      meta_data_arena = &unhooked_async_sig_safe_arena;
-    } else if ((flags & LowLevelAlloc::kCallMallocHook) == 0) {
-      meta_data_arena = &unhooked_arena;
-    }
-  }
   // Arena(0) uses the constructor for non-static contexts
   Arena *result =
-    new (AllocWithArena(sizeof (*result), meta_data_arena)) Arena(0);
-  ArenaInit(result);
-  result->flags = flags;
+    new (AllocWithArena(sizeof (*result), meta_data_arena)) Arena();
   if (allocator) {
     result->allocator = allocator;
   }
@@ -332,33 +249,33 @@ LowLevelAlloc::Arena *LowLevelAlloc::NewArenaWithCustomAlloc(int32 flags,
 
 // L < arena->mu, L < arena->arena->mu
 bool LowLevelAlloc::DeleteArena(Arena *arena) {
-  RAW_CHECK(arena != 0 && arena != &default_arena && arena != &unhooked_arena,
-            "may not delete default arena");
-  ArenaLock section(arena);
-  bool empty = (arena->allocation_count == 0);
-  section.Leave();
-  if (empty) {
-    while (arena->freelist.next[0] != 0) {
-      AllocList *region = arena->freelist.next[0];
-      size_t size = region->header.size;
-      arena->freelist.next[0] = region->next[0];
-      RAW_CHECK(region->header.magic ==
-                Magic(kMagicUnallocated, &region->header),
-                "bad magic number in DeleteArena()");
-      RAW_CHECK(region->header.arena == arena,
-                "bad arena pointer in DeleteArena()");
-      RAW_CHECK(size % arena->pagesize == 0,
-                "empty arena has non-page-aligned block size");
-      RAW_CHECK(reinterpret_cast<intptr_t>(region) % arena->pagesize == 0,
-                "empty arena has non-page-aligned block");
-      int munmap_result = tcmalloc::DirectMUnMap((arena->flags & LowLevelAlloc::kAsyncSignalSafe) == 0,
-                                                 region, size);
-      RAW_CHECK(munmap_result == 0,
-                "LowLevelAlloc::DeleteArena:  munmap failed address");
+  {
+    SpinLockHolder locker{&arena->mu};
+    bool empty = (arena->allocation_count == 0);
+    DCHECK_EQ(empty, true);
+    if (!empty) {
+      return empty;
     }
-    Free(arena);
   }
-  return empty;
+
+  while (arena->freelist.next[0] != 0) {
+    AllocList *region = arena->freelist.next[0];
+    size_t size = region->header.size;
+    arena->freelist.next[0] = region->next[0];
+    RAW_CHECK(region->header.magic ==
+              Magic(kMagicUnallocated, &region->header),
+              "bad magic number in DeleteArena()");
+    RAW_CHECK(region->header.arena == arena,
+              "bad arena pointer in DeleteArena()");
+    RAW_CHECK(size % arena->pagesize == 0,
+              "empty arena has non-page-aligned block size");
+    RAW_CHECK(reinterpret_cast<intptr_t>(region) % arena->pagesize == 0,
+              "empty arena has non-page-aligned block");
+    arena->allocator->UnMapPages(region, size);
+  }
+  Free(arena);
+
+  return true; // empty
 }
 
 // ---------------------------------------------------------------------------
@@ -428,134 +345,120 @@ static void AddToFreelist(void *v, LowLevelAlloc::Arena *arena) {
 // Frees storage allocated by LowLevelAlloc::Alloc().
 // L < arena->mu
 void LowLevelAlloc::Free(void *v) {
-  if (v != 0) {
-    AllocList *f = reinterpret_cast<AllocList *>(
-                        reinterpret_cast<char *>(v) - sizeof (f->header));
-    RAW_CHECK(f->header.magic == Magic(kMagicAllocated, &f->header),
-              "bad magic number in Free()");
-    LowLevelAlloc::Arena *arena = f->header.arena;
-    if ((arena->flags & kCallMallocHook) != 0) {
-      MallocHook::InvokeDeleteHook(v);
-    }
-    ArenaLock section(arena);
-    AddToFreelist(v, arena);
-    RAW_CHECK(arena->allocation_count > 0, "nothing in arena to free");
-    arena->allocation_count--;
-    section.Leave();
+  if (!v) {
+    return;
   }
+  AllocList *f = reinterpret_cast<AllocList *>(
+    reinterpret_cast<char *>(v) - sizeof (f->header));
+  RAW_CHECK(f->header.magic == Magic(kMagicAllocated, &f->header),
+            "bad magic number in Free()");
+  LowLevelAlloc::Arena *arena = f->header.arena;
+
+  SpinLockHolder locker{&arena->mu};
+
+  AddToFreelist(v, arena);
+  RAW_CHECK(arena->allocation_count > 0, "nothing in arena to free");
+  arena->allocation_count--;
+}
+
+void *LowLevelAlloc::Alloc(size_t request) {
+  return AllocWithArena(request, nullptr);
 }
 
 // allocates and returns a block of size bytes, to be freed with Free()
 // L < arena->mu
-static void *DoAllocWithArena(size_t request, LowLevelAlloc::Arena *arena) {
-  void *result = 0;
-  if (request != 0) {
-    AllocList *s;       // will point to region that satisfies request
-    ArenaLock section(arena);
-    ArenaInit(arena);
-    // round up with header
-    size_t req_rnd = RoundUp(request + sizeof (s->header), arena->roundup);
-    for (;;) {      // loop until we find a suitable region
-      // find the minimum levels that a block of this size must have
-      int i = LLA_SkiplistLevels(req_rnd, arena->min_size, false) - 1;
-      if (i < arena->freelist.levels) {   // potential blocks exist
-        AllocList *before = &arena->freelist;  // predecessor of s
-        while ((s = Next(i, before, arena)) != 0 && s->header.size < req_rnd) {
-          before = s;
-        }
-        if (s != 0) {       // we found a region
-          break;
-        }
-      }
-      // we unlock before mmap() both because mmap() may call a callback hook,
-      // and because it may be slow.
-      arena->mu.Unlock();
-      // mmap generous 64K chunks to decrease
-      // the chances/impact of fragmentation:
-      size_t new_pages_size = RoundUp(req_rnd, arena->pagesize * 16);
-      void *new_pages = arena->allocator->MapPages(arena->flags, new_pages_size);
-      arena->mu.Lock();
-      s = reinterpret_cast<AllocList *>(new_pages);
-      s->header.size = new_pages_size;
-      // Pretend the block is allocated; call AddToFreelist() to free it.
-      s->header.magic = Magic(kMagicAllocated, &s->header);
-      s->header.arena = arena;
-      AddToFreelist(&s->levels, arena);  // insert new region into free list
-    }
-    AllocList *prev[kMaxLevel];
-    LLA_SkiplistDelete(&arena->freelist, s, prev);    // remove from free list
-    // s points to the first free region that's big enough
-    if (req_rnd + arena->min_size <= s->header.size) {  // big enough to split
-      AllocList *n = reinterpret_cast<AllocList *>
-                        (req_rnd + reinterpret_cast<char *>(s));
-      n->header.size = s->header.size - req_rnd;
-      n->header.magic = Magic(kMagicAllocated, &n->header);
-      n->header.arena = arena;
-      s->header.size = req_rnd;
-      AddToFreelist(&n->levels, arena);
-    }
-    s->header.magic = Magic(kMagicAllocated, &s->header);
-    RAW_CHECK(s->header.arena == arena, "");
-    arena->allocation_count++;
-    section.Leave();
-    result = &s->levels;
-  }
-  return result;
-}
-
-void *LowLevelAlloc::Alloc(size_t request) {
-  void *result = DoAllocWithArena(request, &default_arena);
-  if ((default_arena.flags & kCallMallocHook) != 0) {
-    // this call must be directly in the user-called allocator function
-    // for MallocHook::GetCallerStackTrace to work properly
-    MallocHook::InvokeNewHook(result, request);
-  }
-  return result;
-}
-
 void *LowLevelAlloc::AllocWithArena(size_t request, Arena *arena) {
-  RAW_CHECK(arena != 0, "must pass a valid arena");
-  void *result = DoAllocWithArena(request, arena);
-  if ((arena->flags & kCallMallocHook) != 0) {
-    // this call must be directly in the user-called allocator function
-    // for MallocHook::GetCallerStackTrace to work properly
-    MallocHook::InvokeNewHook(result, request);
+  if (!request) {
+    return nullptr;
   }
-  return result;
+
+  if (!arena) {
+    arena = DefaultArena();
+  }
+
+  AllocList *s;       // will point to region that satisfies request
+  SpinLockHolder locker{&arena->mu};
+
+  // round up with header
+  size_t req_rnd = RoundUp(request + sizeof (s->header), arena->roundup);
+  for (;;) {      // loop until we find a suitable region
+    // find the minimum levels that a block of this size must have
+    int i = LLA_SkiplistLevels(req_rnd, arena->min_size, false) - 1;
+    if (i < arena->freelist.levels) {   // potential blocks exist
+      AllocList *before = &arena->freelist;  // predecessor of s
+      while ((s = Next(i, before, arena)) != 0 && s->header.size < req_rnd) {
+        before = s;
+      }
+      if (s != 0) {       // we found a region
+        break;
+      }
+    }
+    // we unlock before mmap() both because mmap() may call a callback hook,
+    // and because it may be slow.
+    arena->mu.Unlock();
+    // mmap generous 64K chunks to decrease
+    // the chances/impact of fragmentation:
+    size_t new_pages_size = RoundUp(req_rnd, arena->pagesize * 16);
+    void *new_pages = arena->allocator->MapPages(new_pages_size);
+    arena->mu.Lock();
+    s = reinterpret_cast<AllocList *>(new_pages);
+    s->header.size = new_pages_size;
+    // Pretend the block is allocated; call AddToFreelist() to free it.
+    s->header.magic = Magic(kMagicAllocated, &s->header);
+    s->header.arena = arena;
+    AddToFreelist(&s->levels, arena);  // insert new region into free list
+  }
+  AllocList *prev[kMaxLevel];
+  LLA_SkiplistDelete(&arena->freelist, s, prev);    // remove from free list
+  // s points to the first free region that's big enough
+  if (req_rnd + arena->min_size <= s->header.size) {  // big enough to split
+    AllocList *n = reinterpret_cast<AllocList *>
+      (req_rnd + reinterpret_cast<char *>(s));
+    n->header.size = s->header.size - req_rnd;
+    n->header.magic = Magic(kMagicAllocated, &n->header);
+    n->header.arena = arena;
+    s->header.size = req_rnd;
+    AddToFreelist(&n->levels, arena);
+  }
+  s->header.magic = Magic(kMagicAllocated, &s->header);
+  RAW_CHECK(s->header.arena == arena, "");
+  arena->allocation_count++;
+
+  return &s->levels;
 }
+
+static tcmalloc::StaticStorage<LowLevelAlloc::Arena> default_arena_storage;
 
 LowLevelAlloc::Arena *LowLevelAlloc::DefaultArena() {
-  return &default_arena;
+  static Arena* arena;
+  if (!arena) {
+    // Note, we expect this to happen early enough in process
+    // lifetime, so we can afford to do without memory barriers.
+    arena = default_arena_storage.Construct();
+  }
+  return arena;
 }
 
-static DefaultPagesAllocator *default_pages_allocator;
-static union {
-  char chars[sizeof(DefaultPagesAllocator)];
-  void *ptr;
-} debug_pages_allocator_space;
+static tcmalloc::StaticStorage<DefaultPagesAllocator> default_pages_allocator;
 
 LowLevelAlloc::PagesAllocator *LowLevelAlloc::GetDefaultPagesAllocator(void) {
-  if (default_pages_allocator) {
-    return default_pages_allocator;
-  }
-  default_pages_allocator = new (debug_pages_allocator_space.chars) DefaultPagesAllocator();
-  return default_pages_allocator;
+  static tcmalloc::TrivialOnce once;
+  once.RunOnce(+[] () {
+    default_pages_allocator.Construct();
+  });
+  return default_pages_allocator.get();
 }
 
-void *DefaultPagesAllocator::MapPages(int32 flags, size_t size) {
-  const bool invoke_hooks = ((flags & LowLevelAlloc::kAsyncSignalSafe) == 0);
-
-  auto result = tcmalloc::DirectAnonMMap(invoke_hooks, size);
+void *DefaultPagesAllocator::MapPages(size_t size) {
+  auto result = tcmalloc::DirectAnonMMap(true, size);
 
   RAW_CHECK(result.success, "mmap error");
 
   return result.addr;
 }
 
-void DefaultPagesAllocator::UnMapPages(int32 flags, void *region, size_t size) {
-  const bool invoke_hooks = ((flags & LowLevelAlloc::kAsyncSignalSafe) == 0);
-
-  int munmap_result = tcmalloc::DirectMUnMap(invoke_hooks, region, size);
+void DefaultPagesAllocator::UnMapPages(void *region, size_t size) {
+  int munmap_result = tcmalloc::DirectMUnMap(true, region, size);
   RAW_CHECK(munmap_result == 0,
             "LowLevelAlloc::DeleteArena: munmap failed address");
 }

@@ -47,6 +47,7 @@
 #include "base/basictypes.h"
 #include "base/commandlineflags.h"
 #include "base/spinlock.h"              // for SpinLockHolder, SpinLock, etc
+#include "base/static_storage.h"
 #include "common.h"
 #include "internal_logging.h"
 
@@ -71,13 +72,6 @@
 # define MADV_FREE  MADV_DONTNEED
 #endif
 
-// Solaris has a bug where it doesn't declare madvise() for C++.
-//    http://www.opensolaris.org/jive/thread.jspa?threadID=21035&tstart=0
-#if defined(__sun) && defined(__SVR4)
-# include <sys/types.h>    // for caddr_t
-  extern "C" { extern int madvise(caddr_t, size_t, int); }
-#endif
-
 // Set kDebugMode mode so that we can have use C++ conditionals
 // instead of preprocessor conditionals.
 #ifdef NDEBUG
@@ -99,10 +93,10 @@ static bool CheckAddressBits(uintptr_t ptr) {
   return always_ok || ((ptr >> shift_bits) == 0);
 }
 
-COMPILE_ASSERT(kAddressBits <= 8 * sizeof(void*),
-               address_bits_larger_than_pointer_size);
+static_assert(kAddressBits <= 8 * sizeof(void*),
+              "address bits larger than pointer size");
 
-static SpinLock spinlock(SpinLock::LINKER_INITIALIZED);
+static SpinLock spinlock;
 
 #if defined(HAVE_MMAP) || defined(MADV_FREE)
 // Page size is initialized on demand (only needed for mmap-based allocators)
@@ -133,21 +127,17 @@ public:
   }
   void* Alloc(size_t size, size_t *actual_size, size_t alignment);
 };
-static union {
-  char buf[sizeof(SbrkSysAllocator)];
-  void *ptr;
-} sbrk_space;
+static tcmalloc::StaticStorage<SbrkSysAllocator> sbrk_space;
 
 class MmapSysAllocator : public SysAllocator {
 public:
   MmapSysAllocator() : SysAllocator() {
   }
   void* Alloc(size_t size, size_t *actual_size, size_t alignment);
+private:
+  uintptr_t hint_ = 0;
 };
-static union {
-  char buf[sizeof(MmapSysAllocator)];
-  void *ptr;
-} mmap_space;
+static tcmalloc::StaticStorage<MmapSysAllocator> mmap_space;
 
 class DefaultSysAllocator : public SysAllocator {
  public:
@@ -174,13 +164,21 @@ class DefaultSysAllocator : public SysAllocator {
   SysAllocator* allocs_[kMaxAllocators];
   const char* names_[kMaxAllocators];
 };
-static union {
-  char buf[sizeof(DefaultSysAllocator)];
-  void *ptr;
-} default_space;
+static tcmalloc::StaticStorage<DefaultSysAllocator> default_space;
 static const char sbrk_name[] = "SbrkSysAllocator";
 static const char mmap_name[] = "MmapSysAllocator";
 
+#ifdef HAVE_SBRK
+extern "C" {
+  // When we're building "full" tcmalloc with mmap_hook.cc linked-in,
+  // this definition gets overriden by definition in mmap_hook.cc
+  // which handles hooks which is required by heap checker.
+  ATTRIBUTE_VISIBILITY_HIDDEN ATTRIBUTE_WEAK
+  void* tcmalloc_hooked_sbrk(intptr_t increment) {
+    return sbrk(increment);
+  }
+}
+#endif
 
 void* SbrkSysAllocator::Alloc(size_t size, size_t *actual_size,
                               size_t alignment) {
@@ -218,11 +216,11 @@ void* SbrkSysAllocator::Alloc(size_t size, size_t *actual_size,
   //    http://src.opensolaris.org/source/xref/onnv/onnv-gate/usr/src/lib/libc/port/sys/sbrk.c?a=true
   //    http://sourceware.org/cgi-bin/cvsweb.cgi/~checkout~/libc/misc/sbrk.c?rev=1.1.2.1&content-type=text/plain&cvsroot=glibc
   // Without this check, sbrk may succeed when it ought to fail.)
-  if (reinterpret_cast<intptr_t>(sbrk(0)) + size < size) {
+  if (reinterpret_cast<intptr_t>(tcmalloc_hooked_sbrk(0)) + size < size) {
     return NULL;
   }
 
-  void* result = sbrk(size);
+  void* result = tcmalloc_hooked_sbrk(size);
   if (result == reinterpret_cast<void*>(-1)) {
     return NULL;
   }
@@ -233,7 +231,7 @@ void* SbrkSysAllocator::Alloc(size_t size, size_t *actual_size,
 
   // Try to get more memory for alignment
   size_t extra = alignment - (ptr & (alignment-1));
-  void* r2 = sbrk(extra);
+  void* r2 = tcmalloc_hooked_sbrk(extra);
   if (reinterpret_cast<uintptr_t>(r2) == (ptr + size)) {
     // Contiguous with previous result
     return reinterpret_cast<void*>(ptr + extra);
@@ -241,7 +239,7 @@ void* SbrkSysAllocator::Alloc(size_t size, size_t *actual_size,
 
   // Give up and ask for "size + alignment - 1" bytes so
   // that we can find an aligned region within it.
-  result = sbrk(size + alignment - 1);
+  result = tcmalloc_hooked_sbrk(size + alignment - 1);
   if (result == reinterpret_cast<void*>(-1)) {
     return NULL;
   }
@@ -256,7 +254,7 @@ void* SbrkSysAllocator::Alloc(size_t size, size_t *actual_size,
 void* MmapSysAllocator::Alloc(size_t size, size_t *actual_size,
                               size_t alignment) {
 #ifndef HAVE_MMAP
-  return NULL;
+  return nullptr;
 #else
   // Check if we should use mmap allocation.
   // FLAGS_malloc_skip_mmap starts out as false (its uninitialized
@@ -265,7 +263,7 @@ void* MmapSysAllocator::Alloc(size_t size, size_t *actual_size,
   // Chances are we never get here before the flags are initialized since
   // sbrk is used until the heap is exhausted (before mmap is used).
   if (FLAGS_malloc_skip_mmap) {
-    return NULL;
+    return nullptr;
   }
 
   // Enforce page alignment
@@ -273,7 +271,7 @@ void* MmapSysAllocator::Alloc(size_t size, size_t *actual_size,
   if (alignment < pagesize) alignment = pagesize;
   size_t aligned_size = ((size + alignment - 1) / alignment) * alignment;
   if (aligned_size < size) {
-    return NULL;
+    return nullptr;
   }
   size = aligned_size;
 
@@ -281,6 +279,29 @@ void* MmapSysAllocator::Alloc(size_t size, size_t *actual_size,
   // p up to and including (p + actual_size - 1) have been allocated.
   if (actual_size) {
     *actual_size = size;
+  }
+
+  if (hint_ && hint_ + size > size && (hint_ & (alignment - 1)) == 0) {
+    // We try to 'continue' previous mapping. But we first check that
+    // alignment requirements are met and that it won't overflow
+    // address space.
+    void* result = mmap(reinterpret_cast<void*>(hint_), size,
+                        PROT_READ|PROT_WRITE,
+                        MAP_PRIVATE|MAP_ANONYMOUS,
+                        -1, 0);
+
+    uintptr_t ptr = reinterpret_cast<uintptr_t>(result);
+
+    // If the new mapping (even if at different address than hint
+    // passed) requested alignment, then we return it.
+    if ((ptr & (alignment - 1)) == 0) {
+      hint_ = ptr + size;
+      return result;
+    }
+
+    // Otherwise, we unmap and run "full" logic that is able to align
+    // to arbitrary alignment. And that doesn't use hint.
+    munmap(result, size);
   }
 
   // Ask for extra memory if alignment > pagesize
@@ -293,12 +314,12 @@ void* MmapSysAllocator::Alloc(size_t size, size_t *actual_size,
   //            size + alignment < (1<<NBITS).
   // and        extra <= alignment
   // therefore  size + extra < (1<<NBITS)
-  void* result = mmap(NULL, size + extra,
+  void* result = mmap(nullptr, size + extra,
                       PROT_READ|PROT_WRITE,
                       MAP_PRIVATE|MAP_ANONYMOUS,
                       -1, 0);
   if (result == reinterpret_cast<void*>(MAP_FAILED)) {
-    return NULL;
+    return nullptr;
   }
 
   // Adjust the return memory so it is aligned
@@ -317,6 +338,7 @@ void* MmapSysAllocator::Alloc(size_t size, size_t *actual_size,
   }
 
   ptr += adjust;
+  hint_ = ptr + size;
   return reinterpret_cast<void*>(ptr);
 #endif  // HAVE_MMAP
 }
@@ -348,8 +370,8 @@ SysAllocator *tc_get_sysalloc_override(SysAllocator *def)
 
 static bool system_alloc_inited = false;
 void InitSystemAllocators(void) {
-  MmapSysAllocator *mmap = new (mmap_space.buf) MmapSysAllocator();
-  SbrkSysAllocator *sbrk = new (sbrk_space.buf) SbrkSysAllocator();
+  MmapSysAllocator *mmap = mmap_space.Construct();
+  SbrkSysAllocator *sbrk = sbrk_space.Construct();
 
   // In 64-bit debug mode, place the mmap allocator first since it
   // allocates pointers that do not fit in 32 bits and therefore gives
@@ -358,8 +380,9 @@ void InitSystemAllocators(void) {
   // likely to look like pointers and therefore the conservative gc in
   // the heap-checker is less likely to misinterpret a number as a
   // pointer).
-  DefaultSysAllocator *sdef = new (default_space.buf) DefaultSysAllocator();
-  if (kDebugMode && sizeof(void*) > 4) {
+  DefaultSysAllocator *sdef = default_space.Construct();
+  bool want_mmap = kDebugMode && (sizeof(void*) > 4);
+  if (want_mmap) {
     sdef->SetChildAllocator(mmap, 0, mmap_name);
     sdef->SetChildAllocator(sbrk, 1, sbrk_name);
   } else {

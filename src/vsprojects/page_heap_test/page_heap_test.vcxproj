@@ -30,46 +30,47 @@
     <UseNativeEnvironment>true</UseNativeEnvironment>
     <ProjectGuid>{9765198D-5305-4AB0-9A21-A0CD8201EB2B}</ProjectGuid>
     <Keyword>Win32Proj</Keyword>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release-Patch|Win32'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
-    <PlatformToolset>v140</PlatformToolset>
+    <PlatformToolset>v142</PlatformToolset>
     <CharacterSet>Unicode</CharacterSet>
     <WholeProgramOptimization>true</WholeProgramOptimization>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release-Override|Win32'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
-    <PlatformToolset>v140</PlatformToolset>
+    <PlatformToolset>v142</PlatformToolset>
     <CharacterSet>Unicode</CharacterSet>
     <WholeProgramOptimization>true</WholeProgramOptimization>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release-Patch|x64'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
-    <PlatformToolset>v140</PlatformToolset>
+    <PlatformToolset>v142</PlatformToolset>
     <CharacterSet>Unicode</CharacterSet>
     <WholeProgramOptimization>true</WholeProgramOptimization>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release-Override|x64'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
-    <PlatformToolset>v140</PlatformToolset>
+    <PlatformToolset>v142</PlatformToolset>
     <CharacterSet>Unicode</CharacterSet>
     <WholeProgramOptimization>true</WholeProgramOptimization>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
     <UseDebugLibraries>true</UseDebugLibraries>
-    <PlatformToolset>v140</PlatformToolset>
+    <PlatformToolset>v142</PlatformToolset>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
     <UseDebugLibraries>true</UseDebugLibraries>
-    <PlatformToolset>v140</PlatformToolset>
+    <PlatformToolset>v142</PlatformToolset>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
@@ -117,9 +118,10 @@
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
-      <PreprocessorDefinitions>_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>NO_HEAP_CHECK;NO_TCMALLOC_SAMPLES;PERFTOOLS_DLL_DECL=;_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <WarningLevel>Level3</WarningLevel>
       <EnforceTypeConversionRules>true</EnforceTypeConversionRules>
+      <LanguageStandard>stdcpp17</LanguageStandard>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -127,9 +129,10 @@
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>
-      <PreprocessorDefinitions>_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>NO_HEAP_CHECK;NO_TCMALLOC_SAMPLES;PERFTOOLS_DLL_DECL=;_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <WarningLevel>Level3</WarningLevel>
       <EnforceTypeConversionRules>true</EnforceTypeConversionRules>
+      <LanguageStandard>stdcpp17</LanguageStandard>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -137,10 +140,11 @@
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release-Patch|Win32'">
     <ClCompile>
-      <PreprocessorDefinitions>NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>NO_HEAP_CHECK;NO_TCMALLOC_SAMPLES;PERFTOOLS_DLL_DECL=;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <WarningLevel>Level3</WarningLevel>
       <BufferSecurityCheck>false</BufferSecurityCheck>
       <EnforceTypeConversionRules>true</EnforceTypeConversionRules>
+      <LanguageStandard>stdcpp17</LanguageStandard>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -150,11 +154,12 @@
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release-Override|Win32'">
     <ClCompile>
-      <PreprocessorDefinitions>PERFTOOLS_DLL_DECL=;NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>NO_HEAP_CHECK;NO_TCMALLOC_SAMPLES;PERFTOOLS_DLL_DECL=;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <WarningLevel>Level3</WarningLevel>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <BufferSecurityCheck>false</BufferSecurityCheck>
       <EnforceTypeConversionRules>true</EnforceTypeConversionRules>
+      <LanguageStandard>stdcpp17</LanguageStandard>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -164,10 +169,11 @@
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release-Patch|x64'">
     <ClCompile>
-      <PreprocessorDefinitions>NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>NO_HEAP_CHECK;NO_TCMALLOC_SAMPLES;PERFTOOLS_DLL_DECL=;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <WarningLevel>Level3</WarningLevel>
       <BufferSecurityCheck>false</BufferSecurityCheck>
       <EnforceTypeConversionRules>true</EnforceTypeConversionRules>
+      <LanguageStandard>stdcpp17</LanguageStandard>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -177,11 +183,12 @@
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release-Override|x64'">
     <ClCompile>
-      <PreprocessorDefinitions>PERFTOOLS_DLL_DECL=;NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>NO_HEAP_CHECK;NO_TCMALLOC_SAMPLES;PERFTOOLS_DLL_DECL=;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <WarningLevel>Level3</WarningLevel>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <BufferSecurityCheck>false</BufferSecurityCheck>
       <EnforceTypeConversionRules>true</EnforceTypeConversionRules>
+      <LanguageStandard>stdcpp17</LanguageStandard>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -194,15 +201,15 @@
     <ClCompile Include="..\..\src\base\logging.cc" />
     <ClCompile Include="..\..\src\base\spinlock.cc" />
     <ClCompile Include="..\..\src\base\spinlock_internal.cc" />
+    <ClCompile Include="..\..\src\base\generic_writer.cc" />
     <ClCompile Include="..\..\src\base\sysinfo.cc" />
+    <ClCompile Include="..\..\src\base\proc_maps_iterator.cc" />
     <ClCompile Include="..\..\src\central_freelist.cc" />
     <ClCompile Include="..\..\src\common.cc" />
-    <ClCompile Include="..\..\src\fake_stacktrace_scope.cc" />
     <ClCompile Include="..\..\src\internal_logging.cc" />
     <ClCompile Include="..\..\src\malloc_extension.cc" />
     <ClCompile Include="..\..\src\malloc_hook.cc" />
     <ClCompile Include="..\..\src\page_heap.cc" />
-    <ClCompile Include="..\..\src\raw_printer.cc" />
     <ClCompile Include="..\..\src\sampler.cc" />
     <ClCompile Include="..\..\src\span.cc" />
     <ClCompile Include="..\..\src\stack_trace_table.cc" />
@@ -211,7 +218,14 @@
     <ClCompile Include="..\..\src\symbolize.cc" />
     <ClCompile Include="..\..\src\tests\page_heap_test.cc" />
     <ClCompile Include="..\..\src\thread_cache.cc" />
+    <ClCompile Include="..\..\src\thread_cache_ptr.cc" />
     <ClCompile Include="..\..\src\windows\port.cc" />
+    <ClCompile Include="..\..\src\windows\ia32_modrm_map.cc" />
+    <ClCompile Include="..\..\src\windows\ia32_opcode_map.cc" />
+    <ClCompile Include="..\..\src\windows\patch_functions.cc" />
+    <ClCompile Include="..\..\src\windows\mini_disassembler.cc" />
+    <ClCompile Include="..\..\src\windows\preamble_patcher.cc" />
+    <ClCompile Include="..\..\src\windows\preamble_patcher_with_stub.cc" />
     <ClCompile Include="..\..\src\windows\system-alloc.cc" />
   </ItemGroup>
   <ItemGroup>
@@ -219,10 +233,16 @@
     <ClInclude Include="..\..\src\common.h" />
     <ClInclude Include="..\..\src\config_for_unittests.h" />
     <ClInclude Include="..\..\src\page_heap.h" />
-    <ClInclude Include="..\..\src\windows\config.h" />
+    <ClInclude Include="..\config.h" />
     <ClInclude Include="..\..\src\windows\port.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\gtest\gtest.vcxproj">
+      <Project>{0496df42-d7ad-46b6-b10c-c57a07e89b0d}</Project>
+    </ProjectReference>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>
+  <Import Project="$(MSBuildProjectDirectory)\..\common.vcxproj.props" />
 </Project>

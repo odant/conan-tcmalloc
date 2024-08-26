@@ -60,6 +60,7 @@
 #include "base/googleinit.h"
 #include "base/logging.h"
 #include "base/spinlock.h"
+#include "base/threading.h"
 
 // Some Linux systems don't have sigev_notify_thread_id defined in
 // signal.h (despite having SIGEV_THREAD_ID defined) and also lack
@@ -142,9 +143,9 @@ class ProfileHandler {
   ~ProfileHandler();
 
   // Largest allowed frequency.
-  static const int32 kMaxFrequency = 4000;
+  static const int32_t kMaxFrequency = 4000;
   // Default frequency.
-  static const int32 kDefaultFrequency = 100;
+  static const int32_t kDefaultFrequency = 100;
 
   // ProfileHandler singleton.
   static ProfileHandler* instance_;
@@ -156,10 +157,10 @@ class ProfileHandler {
   bool timer_running_;
 
   // The number of profiling signal interrupts received.
-  int64 interrupts_ GUARDED_BY(signal_lock_);
+  int64_t interrupts_ GUARDED_BY(signal_lock_);
 
   // Profiling signal interrupt frequency, read-only after construction.
-  int32 frequency_;
+  int32_t frequency_;
 
   // ITIMER_PROF (which uses SIGPROF), or ITIMER_REAL (which uses SIGALRM).
   // Translated into an equivalent choice of clock if per_thread_timer_enabled_
@@ -170,7 +171,7 @@ class ProfileHandler {
   int signal_number_;
 
   // Counts the number of callbacks registered.
-  int32 callback_count_ GUARDED_BY(control_lock_);
+  int32_t callback_count_ GUARDED_BY(control_lock_);
 
   // Is profiling allowed at all?
   bool allowed_;
@@ -181,7 +182,7 @@ class ProfileHandler {
 #if HAVE_LINUX_SIGEV_THREAD_ID
   // this is used to destroy per-thread profiling timers on thread
   // termination
-  pthread_key_t thread_timer_key;
+  tcmalloc::TlsKey thread_timer_key;
 #endif
 
   // This lock serializes the registration of threads and protects the
@@ -229,8 +230,8 @@ class ProfileHandler {
 
 ProfileHandler* ProfileHandler::instance_ = NULL;
 
-const int32 ProfileHandler::kMaxFrequency;
-const int32 ProfileHandler::kDefaultFrequency;
+const int32_t ProfileHandler::kMaxFrequency;
+const int32_t ProfileHandler::kDefaultFrequency;
 
 // If we are LD_PRELOAD-ed against a non-pthreads app, then these functions
 // won't be defined.  We declare them here, for that case (with weak linkage)
@@ -264,15 +265,15 @@ extern "C" {
   }
 }
 
-static void CreateThreadTimerKey(pthread_key_t *pkey) {
-  int rv = pthread_key_create(pkey, ThreadTimerDestructor);
+static void CreateThreadTimerKey(tcmalloc::TlsKey *pkey) {
+  int rv = tcmalloc::CreateTlsKey(pkey, ThreadTimerDestructor);
   if (rv) {
-    RAW_LOG(FATAL, "aborting due to pthread_key_create error: %s", strerror(rv));
+    RAW_LOG(FATAL, "aborting due to tcmalloc::CreateTlsKey error: %s", strerror(rv));
   }
 }
 
 static void StartLinuxThreadTimer(int timer_type, int signal_number,
-                                  int32 frequency, pthread_key_t timer_key) {
+                                  int32_t frequency, tcmalloc::TlsKey timer_key) {
   int rv;
   struct sigevent sevp;
   timer_t timerid;
@@ -291,9 +292,9 @@ static void StartLinuxThreadTimer(int timer_type, int signal_number,
   }
 
   timer_id_holder *holder = new timer_id_holder(timerid);
-  rv = pthread_setspecific(timer_key, holder);
+  rv = tcmalloc::SetTlsValue(timer_key, holder);
   if (rv) {
-    RAW_LOG(FATAL, "aborting due to pthread_setspecific error: %s", strerror(rv));
+    RAW_LOG(FATAL, "aborting due to tcmalloc::SetTlsValue error: %s", strerror(rv));
   }
 
   its.it_interval.tv_sec = 0;

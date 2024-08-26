@@ -39,9 +39,11 @@
 #include "config.h"
 
 #include <atomic>
+#include <cstddef>
 
 #include "base/basictypes.h"
 #include "base/spinlock.h"
+#include "base/static_storage.h"
 #include "central_freelist.h"
 #include "common.h"
 #include "page_heap.h"
@@ -62,7 +64,7 @@ class Static {
 
   // Central cache -- an array of free-lists, one per size-class.
   // We have a separate lock per free-list to reduce contention.
-  static CentralFreeListPadded* central_cache() { return central_cache_; }
+  static CentralFreeList* central_cache() { return central_cache_; }
 
   static SizeMap* sizemap() { return &sizemap_; }
 
@@ -73,7 +75,7 @@ class Static {
   // must be protected by pageheap_lock.
 
   // Page-level allocator.
-  static PageHeap* pageheap() { return reinterpret_cast<PageHeap *>(&pageheap_.memory); }
+  static PageHeap* pageheap() { return pageheap_.get(); }
 
   static PageHeapAllocator<Span>* span_allocator() { return &span_allocator_; }
 
@@ -99,10 +101,7 @@ class Static {
   static bool IsInited() { return inited_; }
 
  private:
-  // some unit tests depend on this and link to static vars
-  // imperfectly. Thus we keep those unhidden for now. Thankfully
-  // they're not performance-critical.
-  /* ATTRIBUTE_HIDDEN */ static bool inited_;
+  ATTRIBUTE_HIDDEN static bool inited_;
 
   // These static variables require explicit initialization.  We cannot
   // count on their constructors to do any initialization because other
@@ -110,7 +109,7 @@ class Static {
   // can run their constructors.
 
   ATTRIBUTE_HIDDEN static SizeMap sizemap_;
-  ATTRIBUTE_HIDDEN static CentralFreeListPadded central_cache_[kClassSizesMax];
+  ATTRIBUTE_HIDDEN static CentralFreeList central_cache_[kClassSizesMax];
   ATTRIBUTE_HIDDEN static PageHeapAllocator<Span> span_allocator_;
   ATTRIBUTE_HIDDEN static PageHeapAllocator<StackTrace> stacktrace_allocator_;
   ATTRIBUTE_HIDDEN static Span sampled_objects_;
@@ -121,14 +120,7 @@ class Static {
   // is stored in trace->stack[kMaxStackDepth-1].
   ATTRIBUTE_HIDDEN static std::atomic<StackTrace*> growth_stacks_;
 
-  // PageHeap uses a constructor for initialization.  Like the members above,
-  // we can't depend on initialization order, so pageheap is new'd
-  // into this buffer.
-  union PageHeapStorage {
-    char memory[sizeof(PageHeap)];
-    uintptr_t extra;  // To force alignment
-  };
-  /* ATTRIBUTE_HIDDEN */ static PageHeapStorage pageheap_;
+  ATTRIBUTE_HIDDEN static StaticStorage<PageHeap> pageheap_;
 };
 
 }  // namespace tcmalloc

@@ -14,7 +14,13 @@
     <ClCompile Include="..\..\src\base\dynamic_annotations.cc">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\src\base\generic_writer.cc">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\src\base\sysinfo.cc">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\src\base\proc_maps_iterator.cc">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="..\..\src\base\logging.cc">
@@ -32,6 +38,9 @@
     <ClCompile Include="..\..\src\tests\low_level_alloc_unittest.cc">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\src\malloc_backtrace.cc">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\src\malloc_hook.cc">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -42,9 +51,6 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="..\..\src\stacktrace.cc">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\src\fake_stacktrace_scope.cc">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>
@@ -70,7 +76,7 @@
     <ClInclude Include="..\..\src\base\spinlock_win32-inl.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="..\..\src\windows\config.h">
+    <ClInclude Include="..\config.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="..\..\src\config_for_unittests.h">
@@ -86,6 +92,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="..\..\src\gperftools\malloc_hook.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\malloc_backtrace.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="..\..\src\malloc_hook-inl.h">

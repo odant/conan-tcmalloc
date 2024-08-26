@@ -32,60 +32,24 @@
 // Author: llib@google.com (Bill Clarke)
 
 #include "config_for_unittests.h"
-#include <assert.h>
-#include <stdio.h>
-#ifdef HAVE_MMAP
-#include <sys/mman.h>
-#endif
-#ifdef HAVE_UNISTD_H
-#include <unistd.h>    // for sleep()
-#endif
-#include <algorithm>
-#include <string>
-#include <vector>
+
 #include <gperftools/malloc_hook.h>
 #include "malloc_hook-inl.h"
-#include "base/logging.h"
-#include "base/simple_mutex.h"
-#include "base/sysinfo.h"
+
+#include <assert.h>
+#include <stdio.h>
+
+#include <algorithm>
+#include <chrono>
+#include <condition_variable>
+#include <mutex>
+#include <string>
+#include <thread>
+#include <vector>
+
 #include "tests/testutil.h"
 
-// On systems (like freebsd) that don't define MAP_ANONYMOUS, use the old
-// form of the name instead.
-#ifndef MAP_ANONYMOUS
-# define MAP_ANONYMOUS MAP_ANON
-#endif
-
-namespace {
-
-std::vector<void (*)()> g_testlist;  // the tests to run
-
-#define TEST(a, b)                                      \
-  struct Test_##a##_##b {                               \
-    Test_##a##_##b() { g_testlist.push_back(&Run); }    \
-    static void Run();                                  \
-  };                                                    \
-  static Test_##a##_##b g_test_##a##_##b;               \
-  void Test_##a##_##b::Run()
-
-
-static int RUN_ALL_TESTS() {
-  std::vector<void (*)()>::const_iterator it;
-  for (it = g_testlist.begin(); it != g_testlist.end(); ++it) {
-    (*it)();   // The test will error-exit if there's a problem.
-  }
-  fprintf(stderr, "\nPassed %d tests\n\nPASS\n",
-          static_cast<int>(g_testlist.size()));
-  return 0;
-}
-
-void Sleep(int seconds) {
-#ifdef _MSC_VER
-  _sleep(seconds * 1000);   // Windows's _sleep takes milliseconds argument
-#else
-  sleep(seconds);
-#endif
-}
+#include "gtest/gtest.h"
 
 using base::internal::kHookListMaxValues;
 
@@ -200,7 +164,7 @@ void MultithreadedTestThread(TestHookList* list, int shift,
     const auto value = reinterpret_cast<MallocHook::NewHook>((i << shift) + thread_num);
     EXPECT_TRUE(list->Add(value));
 
-    sched_yield();  // Ensure some more interleaving.
+    std::this_thread::yield();  // Ensure some more interleaving.
 
     MallocHook::NewHook values[kHookListMaxValues + 1];
     int num_values = list->Traverse(values, kHookListMaxValues + 1);
@@ -217,11 +181,11 @@ void MultithreadedTestThread(TestHookList* list, int shift,
     snprintf(buf, sizeof(buf), "[%d/%d; ", value_index, num_values);
     message += buf;
 
-    sched_yield();
+    std::this_thread::yield();
 
     EXPECT_TRUE(list->Remove(value));
 
-    sched_yield();
+    std::this_thread::yield();
 
     num_values = list->Traverse(values, kHookListMaxValues);
     for (value_index = 0;
@@ -234,29 +198,27 @@ void MultithreadedTestThread(TestHookList* list, int shift,
     snprintf(buf, sizeof(buf), "%d]", num_values);
     message += buf;
 
-    sched_yield();
+    std::this_thread::yield();
   }
   fprintf(stderr, "thread %d: %s\n", thread_num, message.c_str());
 }
 
-static volatile int num_threads_remaining;
+static int num_threads_remaining;
 static TestHookList list{kTestValue};
-static Mutex threadcount_lock;
+static std::mutex threadcount_lock;
+static std::condition_variable threadcount_ready;
 
 void MultithreadedTestThreadRunner(int thread_num) {
   // Wait for all threads to start running.
   {
-    MutexLock ml(&threadcount_lock);
+    std::unique_lock ml{threadcount_lock};
+
     assert(num_threads_remaining > 0);
     --num_threads_remaining;
 
-    // We should use condvars and the like, but for this test, we'll
-    // go simple and busy-wait.
-    while (num_threads_remaining > 0) {
-      threadcount_lock.Unlock();
-      Sleep(1);
-      threadcount_lock.Lock();
-    }
+    threadcount_ready.wait(ml, [&] () { return num_threads_remaining == 0; });
+    // the last thread to decrement to 0 will wake everyone
+    threadcount_ready.notify_all();
   }
 
   // shift is the smallest number such that (1<<shift) > kHookListMaxValues
@@ -276,16 +238,9 @@ TEST(HookListTest, MultithreadedTest) {
   // Run kHookListMaxValues thread, each running MultithreadedTestThread.
   // First, we need to set up the rest of the globals.
   num_threads_remaining = kHookListMaxValues;   // a global var
-  RunManyThreadsWithId(&MultithreadedTestThreadRunner, num_threads_remaining,
-                       1 << 15);
+  RunManyThreadsWithId(&MultithreadedTestThreadRunner, num_threads_remaining);
 
   MallocHook::NewHook values[kHookListMaxValues + 1];
   EXPECT_EQ(0, list.Traverse(values, kHookListMaxValues + 1));
   EXPECT_EQ(0, list.priv_end);
-}
-
-}  // namespace
-
-int main(int argc, char** argv) {
-  return RUN_ALL_TESTS();
 }

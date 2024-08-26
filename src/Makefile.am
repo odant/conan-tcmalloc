@@ -16,7 +16,7 @@ AM_CPPFLAGS += -DNO_TCMALLOC_SAMPLES
 endif !WITH_STACK_TRACE
 
 # This is mostly based on configure options
-AM_CXXFLAGS =
+AM_CXXFLAGS = $(PTHREAD_CFLAGS)
 
 # These are good warnings to turn on by default.
 if GCC
@@ -24,19 +24,17 @@ AM_CXXFLAGS += -Wall -Wwrite-strings -Woverloaded-virtual \
                -Wno-sign-compare
 endif GCC
 
-if HAVE_W_NO_UNUSED_RESULT
-AM_CXXFLAGS += -Wno-unused-result
-endif HAVE_W_NO_UNUSED_RESULT
 if HAVE_SIZED_DEALLOCATION
 AM_CXXFLAGS += -fsized-deallocation
 endif HAVE_SIZED_DEALLOCATION
-if HAVE_F_ALIGNED_NEW
-AM_CXXFLAGS += -faligned-new
-endif HAVE_F_ALIGNED_NEW
+
+if ENABLE_W_THREAD_SAFETY
+AM_CXXFLAGS += -Wthread-safety
+endif ENABLE_W_THREAD_SAFETY
 
 # The -no-undefined flag allows libtool to generate shared libraries for
-# Cygwin and MinGW.  LIBSTDCXX_LA_LINKER_FLAG is used to fix a Solaris bug.
-AM_LDFLAGS = -no-undefined $(LIBSTDCXX_LA_LINKER_FLAG)
+# Cygwin and MinGW.
+AM_LDFLAGS = -no-undefined $(NANOSLEEP_LIBS) $(PTHREAD_LIBS)
 
 # respect --enable-frame-pointers regardless of architecture
 if ENABLE_FRAME_POINTERS
@@ -55,38 +53,11 @@ endif !ENABLE_FRAME_POINTERS
 # accomplishes its tasks via patching, leaving no work for the linker
 # to identify, so the linker will ignore libtcmalloc by default unless
 # we explicitly create a dependency via -u.
-TCMALLOC_FLAGS =
 if MINGW
-TCMALLOC_FLAGS += -Wl,-u__tcmalloc
-endif MINGW
-
-# If we have objcopy, make malloc/free/etc weak symbols.  That way folks
-# can override our malloc if they want to (they can still use tc_malloc).
-# Note: the weird-looking symbols are the c++ memory functions:
-# (in order) new, new(nothrow), new[], new[](nothrow), delete, delete[]
-if HAVE_OBJCOPY_WEAKEN
-WEAKEN = $(OBJCOPY) -W malloc -W free -W realloc -W calloc -W cfree \
-         -W memalign -W posix_memalign -W valloc -W pvalloc \
-         -W aligned_alloc \
-         -W malloc_stats -W mallopt -W mallinfo -W mallinfo2 -W nallocx \
-         -W _Znwm -W _ZnwmRKSt9nothrow_t -W _Znam -W _ZnamRKSt9nothrow_t \
-         -W _ZdlPv -W _ZdaPv \
-         -W __Znwm -W __ZnwmRKSt9nothrow_t -W __Znam -W __ZnamRKSt9nothrow_t \
-         -W __ZdlPv -W __ZdaPv \
-         -W _ZdaPvRKSt9nothrow_t -W _ZdaPvSt11align_val_t \
-         -W _ZdaPvSt11align_val_tRKSt9nothrow_t -W _ZdaPvm \
-         -W _ZdaPvmSt11align_val_t -W _ZdlPvRKSt9nothrow_t \
-         -W _ZdlPvSt11align_val_t -W _ZdlPvSt11align_val_tRKSt9nothrow_t \
-         -W _ZdlPvm -W _ZdlPvmSt11align_val_t \
-         -W _ZnamSt11align_val_t -W _ZnamSt11align_val_tRKSt9nothrow_t \
-         -W _ZnwmSt11align_val_t -W _ZnwmSt11align_val_tRKSt9nothrow_t \
-         -W malloc_size -W malloc_usable_size
-
+TCMALLOC_FLAGS = -Wl,-u__tcmalloc
 else
-WEAKEN = :
-endif !HAVE_OBJCOPY_WEAKEN
-
-LIBS_TO_WEAKEN =
+TCMALLOC_FLAGS =
+endif !MINGW
 
 perftoolsincludedir = $(includedir)/gperftools
 # The .h files you want to install (that is, .h files that people
@@ -96,13 +67,6 @@ perftoolsinclude_HEADERS =
 # tcmalloc.h is a special case, because it's a .h.in file
 nodist_perftoolsinclude_HEADERS = src/gperftools/tcmalloc.h
 noinst_HEADERS = src/gperftools/tcmalloc.h.in
-
-# This is provided for backwards compatibility.  It is populated by
-# files that just forward to the canonical location in
-# perftoolsincludedir.
-googleincludedir = $(includedir)/google
-googleinclude_HEADERS =				\
-   src/google/tcmalloc.h
 
 # This is for HTML and other documentation you want to install.  Add
 # your documentation files (in doc/) in addition to these top-level
@@ -116,17 +80,9 @@ dist_doc_DATA = AUTHORS COPYING INSTALL NEWS README README_windows.txt \
 lib_LTLIBRARIES =
 # This is for 'convenience libraries' -- basically just a container for sources
 noinst_LTLIBRARIES =
-## The location of the windows project file for each binary we make
-WINDOWS_PROJECTS = gperftools.sln
 
 # unittests you want to run when people type 'make check'.
 # Note: tests cannot take any arguments!
-# In theory, unittests that are scripts should be added to check_SCRIPTS
-# instead.  But check_SCRIPTS is definitely a second-class testing mechanims:
-# it don't get TESTS_ENVIRONMENT, and it doesn't get success/failure counting
-# (in fact, a script failure aborts all the rest of the tests, even with -k).
-# So, for scripts, we add the script to tests, and also put in an empty
-# rule so automake doesn't try to build the script as a C binary.
 TESTS =
 # TESTS_ENVIRONMENT sets environment variables for when you run unittest.
 # We always get "srcdir" set for free.
@@ -149,132 +105,98 @@ EXTRA_INSTALL =
 dist_doc_DATA += docs/index.html docs/designstyle.css
 
 
-### ------- library routines, in src/base
+### ------- various support library routines
 
-# This is a 'convenience library' -- it's not actually installed or anything
-LOGGING_INCLUDES = src/base/logging.h \
-                   src/base/commandlineflags.h \
-                   src/base/basictypes.h \
-                   src/base/dynamic_annotations.h
-noinst_LTLIBRARIES += liblogging.la
-liblogging_la_SOURCES = src/base/logging.cc \
-                        $(LOGGING_INCLUDES)
+# Having set of common helpers helps with unit testing various "guts"
+noinst_LTLIBRARIES += libcommon.la
+libcommon_la_SOURCES = src/base/logging.cc \
+                       src/base/generic_writer.cc \
+                       src/base/sysinfo.cc \
+                       src/base/proc_maps_iterator.cc \
+                       src/base/dynamic_annotations.cc \
+                       src/base/spinlock.cc \
+                       src/base/spinlock_internal.cc
 
-SYSINFO_INCLUDES = src/base/sysinfo.h \
-                   src/getenv_safe.h \
-                   src/base/logging.h \
-                   src/base/commandlineflags.h \
-                   src/base/basictypes.h
-noinst_LTLIBRARIES += libsysinfo.la
-libsysinfo_la_SOURCES = src/base/sysinfo.cc \
-                        src/base/dynamic_annotations.cc \
-                        $(SYSINFO_INCLUDES)
-libsysinfo_la_LIBADD = $(NANOSLEEP_LIBS)
-
-# For MinGW, we use also have to use libwindows Luckily, we need the
-# windows.a library in exactly the same place we need spinlock.a
-# (pretty much everywhere), so we can use the same variable name for
-# each.  We can also optimize the MinGW rule a bit by leaving out
-# files we know aren't used on windows. libwindows also obsoletes the
-# need for other files like system_alloc.cc.
 if MINGW
-WINDOWS_INCLUDES = src/windows/port.h \
-                   src/windows/mingw.h \
-                   src/windows/mini_disassembler.h \
-                   src/windows/mini_disassembler_types.h \
-                   src/windows/preamble_patcher.h
-noinst_LTLIBRARIES += libwindows.la
-libwindows_la_SOURCES = $(WINDOWS_INCLUDES) \
-                        src/windows/port.cc \
-                        src/windows/system-alloc.cc \
+libcommon_la_SOURCES += src/windows/port.cc \
                         src/windows/ia32_modrm_map.cc \
                         src/windows/ia32_opcode_map.cc \
                         src/windows/mini_disassembler.cc \
-                        src/windows/patch_functions.cc \
                         src/windows/preamble_patcher.cc \
                         src/windows/preamble_patcher_with_stub.cc
-# patch_functions.cc uses Psapi.lib.  MSVC has a #pragma for that, but not us.
-libwindows_la_LIBADD = -lpsapi
 
-SPINLOCK_INCLUDES = src/base/spinlock.h \
-                    src/base/spinlock_internal.h \
-                    src/base/spinlock_win32-inl.h \
-                    src/base/spinlock_linux-inl.h \
-                    src/base/spinlock_posix-inl.h
-noinst_LTLIBRARIES += libspinlock.la
-libspinlock_la_SOURCES = src/base/spinlock.cc \
-                         src/base/spinlock_internal.cc \
-                         $(SPINLOCK_INCLUDES)
-libspinlock_la_LIBADD = -lsynchronization
-
-LIBSPINLOCK = libwindows.la libspinlock.la libsysinfo.la liblogging.la
-
-# We also need to tell mingw that sysinfo.cc needs shlwapi.lib.
-# (We do this via a #pragma for msvc, but need to do it here for mingw).
-libsysinfo_la_LIBADD += -lshlwapi
-
-# There's a windows-specific unittest we can run.  Right now it's
-# win64-specific, and relies on masm, so we comment it out.
-## TESTS += preamble_patcher_test
-## preamble_patcher_test_SOURCES = src/windows/preamble_patcher_test.cc \
-##                                 src/windows/shortproc.asm \
-##                                 src/windows/auto_testing_hook.h \
-##                                 src/windows/preamble_patcher.h \
-##                                 src/base/basictypes.h \
-##                                 src/base/logging.h
-## preamble_patcher_test_LDFLAGS = $(TCMALLOC_FLAGS)
-## preamble_patcher_test_LDADD = libtcmalloc_minimal.la
+# windows bits need some extra libraries
+AM_LDFLAGS += -lpsapi -lsynchronization -lshlwapi
 
 # patch_functions.cc #includes tcmalloc.cc, so no need to link it in.
-TCMALLOC_CC =
-SYSTEM_ALLOC_CC =
-else !MINGW
-SPINLOCK_INCLUDES = src/base/spinlock.h \
-                    src/base/spinlock_internal.h
+TCMALLOC_CC = src/windows/patch_functions.cc
+SYSTEM_ALLOC_CC = src/windows/system-alloc.cc
 
-noinst_LTLIBRARIES += libspinlock.la
-libspinlock_la_SOURCES = src/base/spinlock.cc \
-                         src/base/spinlock_internal.cc \
-                         $(SPINLOCK_INCLUDES)
-libspinlock_la_LIBADD = $(NANOSLEEP_LIBS)
-# spinlock also needs NumCPUs, from libsysinfo, which in turn needs liblogging
-LIBSPINLOCK = libspinlock.la libsysinfo.la liblogging.la
+else !MINGW
 
 TCMALLOC_CC = src/tcmalloc.cc
 SYSTEM_ALLOC_CC = src/system-alloc.cc
+
 endif !MINGW
 
-# Add this whether or not we're under MinGW, to keep the tarball complete.
-WINDOWS_PROJECTS += vsprojects/preamble_patcher_test/preamble_patcher_test.vcxproj
-# Because we've commented out the test, above, we have to explicitly add
-# the test files to the tarball or automake will leave them out.
-WINDOWS_PROJECTS += src/windows/preamble_patcher_test.cc \
-                    src/windows/shortproc.asm \
-                    src/windows/auto_testing_hook.h
-
+# On MSVC, we need our own versions of addr2line and nm to work with
+# pprof, plus couple more tests.
+WINDOWS_EXTRA = src/windows/preamble_patcher_test.cc \
+                src/windows/shortproc.asm \
+                src/windows/auto_testing_hook.h \
+                src/windows/nm-pdb.c \
+                src/windows/addr2line-pdb.c
 
 ### Unittests
 
+noinst_LTLIBRARIES += libgtest.la
+libgtest_la_SOURCES = vendor/googletest/googletest/src/gtest_main.cc \
+ vendor/googletest/googletest/src/gtest-assertion-result.cc \
+ vendor/googletest/googletest/src/gtest-death-test.cc \
+ vendor/googletest/googletest/src/gtest-filepath.cc \
+ vendor/googletest/googletest/src/gtest-matchers.cc \
+ vendor/googletest/googletest/src/gtest-port.cc \
+ vendor/googletest/googletest/src/gtest-printers.cc \
+ vendor/googletest/googletest/src/gtest-test-part.cc \
+ vendor/googletest/googletest/src/gtest-typed-test.cc \
+ vendor/googletest/googletest/src/gtest.cc
+
+libgtest_la_CPPFLAGS = -I$(top_srcdir)/vendor/googletest/googletest/include \
+ -I$(top_srcdir)/vendor/googletest/googletest/ $(AM_CPPFLAGS)
+
+gtest_CPPFLAGS = -I$(top_srcdir)/vendor/googletest/googletest/include $(AM_CPPFLAGS)
+
+# Note, we skip this test on mingw (and windows in general). It uses
+# unsetenv, which is not available on win32.
+if !MINGW
+TESTS += unique_path_unittest
+unique_path_unittest_SOURCES = src/tests/unique_path_unittest.cc
+unique_path_unittest_LDFLAGS = $(PTHREAD_CFLAGS) $(AM_LDFLAGS)
+unique_path_unittest_CPPFLAGS = $(gtest_CPPFLAGS)
+unique_path_unittest_LDADD = libcommon.la libgtest.la
+endif !MINGW
+
+TESTS += generic_writer_test
+generic_writer_test_SOURCES = src/tests/generic_writer_test.cc
+generic_writer_test_CPPFLAGS = $(gtest_CPPFLAGS)
+generic_writer_test_LDADD = libcommon.la libgtest.la
+
+TESTS += proc_maps_iterator_test
+proc_maps_iterator_test_SOURCES = src/tests/proc_maps_iterator_test.cc
+proc_maps_iterator_test_CPPFLAGS = $(gtest_CPPFLAGS)
+proc_maps_iterator_test_LDADD = libcommon.la libgtest.la
+
 if WITH_HEAP_PROFILER_OR_CHECKER
-WINDOWS_PROJECTS += vsprojects/low_level_alloc_unittest/low_level_alloc_unittest.vcxproj
 TESTS += low_level_alloc_unittest
-LOW_LEVEL_ALLOC_UNITTEST_INCLUDES = src/base/low_level_alloc.h \
-                                    src/base/basictypes.h \
-                                    src/gperftools/malloc_hook.h \
-                                    src/gperftools/malloc_hook_c.h \
-                                    src/malloc_hook-inl.h \
-                                    src/mmap_hook.h \
-                                    $(SPINLOCK_INCLUDES) \
-                                    $(LOGGING_INCLUDES)
 low_level_alloc_unittest_SOURCES = src/base/low_level_alloc.cc \
                                    src/malloc_hook.cc \
                                    src/mmap_hook.cc \
-                                   src/tests/low_level_alloc_unittest.cc \
-                                   $(LOW_LEVEL_ALLOC_UNITTEST_INCLUDES)
+                                   src/tests/low_level_alloc_unittest.cc
 # By default, MallocHook takes stack traces for use by the heap-checker.
 # We don't need that functionality here, so we turn it off to reduce deps.
-low_level_alloc_unittest_CXXFLAGS = -DNO_TCMALLOC_SAMPLES
-low_level_alloc_unittest_LDADD = $(LIBSPINLOCK)
+low_level_alloc_unittest_CXXFLAGS = -DNO_TCMALLOC_SAMPLES $(AM_CXXFLAGS)
+low_level_alloc_unittest_CPPFLAGS = $(gtest_CPPFLAGS)
+low_level_alloc_unittest_LDADD = libcommon.la libgtest.la
 endif WITH_HEAP_PROFILER_OR_CHECKER
 
 ### ------- stack trace
@@ -282,56 +204,29 @@ endif WITH_HEAP_PROFILER_OR_CHECKER
 if WITH_STACK_TRACE
 
 ### The header files we use.  We divide into categories based on directory
-S_STACKTRACE_INCLUDES = src/stacktrace_impl_setup-inl.h \
-                        src/stacktrace_generic-inl.h \
-                        src/stacktrace_generic_fp-inl.h \
-                        src/check_address-inl.h \
-                        src/stacktrace_libgcc-inl.h \
-			src/stacktrace_libunwind-inl.h \
-			src/stacktrace_arm-inl.h \
-			src/stacktrace_powerpc-inl.h \
-			src/stacktrace_powerpc-darwin-inl.h \
-			src/stacktrace_powerpc-linux-inl.h \
-			src/stacktrace_win32-inl.h \
-			src/stacktrace_instrument-inl.h \
-                        src/base/elf_mem_image.h \
-                        src/base/vdso_support.h
 
-SG_STACKTRACE_INCLUDES = src/gperftools/stacktrace.h
-STACKTRACE_INCLUDES = $(S_STACKTRACE_INCLUDES) $(SG_STACKTRACE_INCLUDES)
-perftoolsinclude_HEADERS += $(SG_STACKTRACE_INCLUDES)
-googleinclude_HEADERS += src/google/stacktrace.h
+perftoolsinclude_HEADERS += src/gperftools/stacktrace.h
 
 ### Making the library
 noinst_LTLIBRARIES += libstacktrace.la
 libstacktrace_la_SOURCES = src/stacktrace.cc \
                            src/base/elf_mem_image.cc \
-                           src/base/vdso_support.cc \
-                           $(STACKTRACE_INCLUDES)
-libstacktrace_la_LIBADD = $(UNWIND_LIBS) $(LIBSPINLOCK)
-STACKTRACE_SYMBOLS = '(GetStackTrace|GetStackFrames|GetStackTraceWithContext|GetStackFramesWithContext)'
-libstacktrace_la_LDFLAGS = -export-symbols-regex $(STACKTRACE_SYMBOLS) $(AM_LDFLAGS)
-
-noinst_LTLIBRARIES += libfake_stacktrace_scope.la
-libfake_stacktrace_scope_la_SOURCES = src/fake_stacktrace_scope.cc
+                           src/base/vdso_support.cc
+libstacktrace_la_LIBADD = $(UNWIND_LIBS)
 
 ### Unittests
 TESTS += stacktrace_unittest
-STACKTRACE_UNITTEST_INCLUDES = src/config_for_unittests.h \
-                               src/base/commandlineflags.h \
-                               $(STACKTRACE_INCLUDES) \
-                               $(LOGGING_INCLUDES)
 stacktrace_unittest_SOURCES = src/tests/stacktrace_unittest.cc \
-                              $(libstacktrace_la_SOURCES) \
-                              $(STACKTRACE_UNITTEST_INCLUDES)
+                              $(libstacktrace_la_SOURCES)
 stacktrace_unittest_CXXFLAGS = $(AM_CXXFLAGS) -DSTACKTRACE_IS_TESTED
-stacktrace_unittest_LDADD = $(libstacktrace_la_LIBADD) liblogging.la libfake_stacktrace_scope.la $(STACKTRACE_UNITTEST_LIBS)
+stacktrace_unittest_LDADD = $(libstacktrace_la_LIBADD) $(STACKTRACE_UNITTEST_LIBS) libcommon.la
 # nice to have. Allows glibc's backtrace_symbols to work.
 stacktrace_unittest_LDFLAGS = -export-dynamic
 
-TESTS += check_address_unittest
-check_address_unittest_SOURCES = src/tests/check_address_test.cc
-check_address_unittest_LDADD = liblogging.la $(LIBSPINLOCK)
+TESTS += check_address_test
+check_address_test_SOURCES = src/tests/check_address_test.cc
+check_address_test_CPPFLAGS = $(gtest_CPPFLAGS)
+check_address_test_LDADD = libcommon.la libgtest.la
 
 ### Documentation
 dist_doc_DATA +=
@@ -350,10 +245,6 @@ pprof-symbolize : $(top_srcdir)/src/pprof
 
 ### Unittests
 
-check_SCRIPTS = pprof_unittest
-pprof_unittest: $(top_srcdir)/src/pprof
-	$(top_srcdir)/src/pprof -test
-
 # Let unittests find pprof if they need to run it
 TESTS_ENVIRONMENT += PPROF_PATH=$(top_srcdir)/src/pprof
 
@@ -365,330 +256,222 @@ endif INSTALL_PPROF
 
 ### Documentation
 
-# On MSVC, we need our own versions of addr2line and nm to work with pprof.
-WINDOWS_PROJECTS += vsprojects/nm-pdb/nm-pdb.vcxproj
-WINDOWS_PROJECTS += vsprojects/addr2line-pdb/addr2line-pdb.vcxproj
-# This is a slight abuse of WINDOWS_PROJECTS, but not much
-WINDOWS_PROJECTS += src/windows/nm-pdb.c \
-                    src/windows/addr2line-pdb.c
-
 endif WITH_STACK_TRACE
 
 ### ------- tcmalloc_minimal (thread-caching malloc)
 
-### The header files we use.  We divide into categories based on directory
-S_TCMALLOC_MINIMAL_INCLUDES = src/common.h \
-                              src/internal_logging.h \
-                              src/system-alloc.h \
-                              src/packed-cache-inl.h \
-                              $(SPINLOCK_INCLUDES) \
-                              src/tcmalloc_guard.h \
-                              src/base/commandlineflags.h \
-                              src/base/basictypes.h \
-                              src/safe_strerror.h \
-                              src/pagemap.h \
-                              src/sampler.h \
-                              src/central_freelist.h \
-                              src/linked_list.h \
-                              src/libc_override.h \
-                              src/libc_override_aix.h \
-                              src/libc_override_gcc_and_weak.h \
-                              src/libc_override_glibc.h \
-                              src/libc_override_osx.h \
-                              src/libc_override_redefine.h \
-                              src/page_heap.h \
-                              src/page_heap_allocator.h \
-                              src/span.h \
-                              src/static_vars.h \
-                              src/symbolize.h \
-                              src/thread_cache.h \
-                              src/stack_trace_table.h \
-                              src/base/thread_annotations.h \
-                              src/malloc_hook-inl.h
-SG_TCMALLOC_MINIMAL_INCLUDES = src/gperftools/malloc_hook.h \
-                               src/gperftools/malloc_hook_c.h \
-                               src/gperftools/malloc_extension.h \
-                               src/gperftools/malloc_extension_c.h \
-                               src/gperftools/nallocx.h
-TCMALLOC_MINIMAL_INCLUDES = $(S_TCMALLOC_MINIMAL_INCLUDES) $(SG_TCMALLOC_MINIMAL_INCLUDES) $(SG_STACKTRACE_INCLUDES)
-perftoolsinclude_HEADERS += $(SG_TCMALLOC_MINIMAL_INCLUDES)
-googleinclude_HEADERS += src/google/malloc_hook.h \
-                         src/google/malloc_hook_c.h \
-                         src/google/malloc_extension.h \
-                         src/google/malloc_extension_c.h
+perftoolsinclude_HEADERS += src/gperftools/malloc_hook.h \
+                            src/gperftools/malloc_hook_c.h \
+                            src/gperftools/malloc_extension.h \
+                            src/gperftools/malloc_extension_c.h \
+                            src/gperftools/nallocx.h
 
 ### Making the library
 
-noinst_LTLIBRARIES += libtcmalloc_minimal_internal.la
-libtcmalloc_minimal_internal_la_SOURCES = src/common.cc \
-                                          src/internal_logging.cc \
-                                          $(SYSTEM_ALLOC_CC) \
-                                          src/memfs_malloc.cc \
-                                          src/safe_strerror.cc \
-                                          src/central_freelist.cc \
-                                          src/page_heap.cc \
-                                          src/sampler.cc \
-                                          src/span.cc \
-                                          src/stack_trace_table.cc \
-                                          src/static_vars.cc \
-                                          src/symbolize.cc \
-                                          src/thread_cache.cc \
-                                          src/malloc_hook.cc \
-                                          src/malloc_extension.cc \
-                                          $(TCMALLOC_MINIMAL_INCLUDES)
-# We #define NO_TCMALLOC_SAMPLES, since sampling is turned off for _minimal.
-libtcmalloc_minimal_internal_la_CXXFLAGS = -DNO_TCMALLOC_SAMPLES \
-                                           -DNO_HEAP_CHECK \
-                                           -DNDEBUG \
-                                           $(AM_CXXFLAGS)
-libtcmalloc_minimal_internal_la_LDFLAGS =  $(AM_LDFLAGS)
-libtcmalloc_minimal_internal_la_LIBADD =  $(LIBSPINLOCK)
+MINIMAL_MALLOC_SRC = src/common.cc \
+                     src/internal_logging.cc \
+                     $(SYSTEM_ALLOC_CC) \
+                     src/memfs_malloc.cc \
+                     src/safe_strerror.cc \
+                     src/central_freelist.cc \
+                     src/page_heap.cc \
+                     src/sampler.cc \
+                     src/span.cc \
+                     src/stack_trace_table.cc \
+                     src/static_vars.cc \
+                     src/symbolize.cc \
+                     src/thread_cache.cc \
+                     src/thread_cache_ptr.cc \
+                     src/malloc_hook.cc \
+                     src/malloc_extension.cc
 
 lib_LTLIBRARIES += libtcmalloc_minimal.la
-WINDOWS_PROJECTS += vsprojects/libtcmalloc_minimal/libtcmalloc_minimal.vcxproj
-libtcmalloc_minimal_la_SOURCES = $(TCMALLOC_CC) $(TCMALLOC_MINIMAL_INCLUDES)
+libtcmalloc_minimal_la_SOURCES = $(TCMALLOC_CC) $(MINIMAL_MALLOC_SRC)
+
 libtcmalloc_minimal_la_CXXFLAGS = -DNO_TCMALLOC_SAMPLES \
-                                  $(PTHREAD_CFLAGS) -DNDEBUG $(AM_CXXFLAGS)
+                                  -DNO_HEAP_CHECK \
+                                  -DNDEBUG $(AM_CXXFLAGS)
 # -version-info gets passed to libtool
 libtcmalloc_minimal_la_LDFLAGS = -version-info @TCMALLOC_SO_VERSION@ $(AM_LDFLAGS)
-libtcmalloc_minimal_la_LIBADD = libtcmalloc_minimal_internal.la
+libtcmalloc_minimal_la_LIBADD = libcommon.la
 
-LIBS_TO_WEAKEN += libtcmalloc_minimal.la
-
-### Unittests
-
-# Commented out for the moment because malloc(very_big_num) is broken in
-# standard libc!  At least, in some situations, some of the time.
-## TESTS += malloc_unittest
-## MALLOC_UNITEST_INCLUDES = src/gperftools/malloc_extension.h \
-##                           src/gperftools/malloc_hook.h \
-##                           src/gperftools/malloc_hook_c.h \
-##                           src/malloc_hook-inl.h \
-##                           src/base/basictypes.h \
-## malloc_unittest_SOURCES = src/tests/tcmalloc_unittest.cc \
-##                           src/malloc_hook.cc \
-##                           src/malloc_extension.cc \
-##                           $(MALLOC_UNITTEST_INCLUDES)
-## malloc_unittest_CXXFLAGS = $(PTHREAD_CFLAGS) $(AM_CXXFLAGS)
-## malloc_unittest_LDFLAGS = $(PTHREAD_CFLAGS)
-## malloc_unittest_LDADD = $(PTHREAD_LIBS)
-
-TESTS += tcmalloc_minimal_unittest
-WINDOWS_PROJECTS += vsprojects/tcmalloc_minimal_unittest/tcmalloc_minimal_unittest.vcxproj
-tcmalloc_minimal_unittest_SOURCES = src/tests/tcmalloc_unittest.cc \
-                                    src/tests/testutil.h src/tests/testutil.cc \
-                                    $(TCMALLOC_UNITTEST_INCLUDES)
-tcmalloc_minimal_unittest_CXXFLAGS = $(PTHREAD_CFLAGS) $(AM_CXXFLAGS)
-tcmalloc_minimal_unittest_LDFLAGS = $(PTHREAD_CFLAGS) $(TCMALLOC_FLAGS)
-# We want libtcmalloc last on the link line, but due to a bug in
-# libtool involving convenience libs, they need to come last on the
-# link line in order to get dependency ordering right.  This is ok:
-# convenience libraries are .a's, so tcmalloc is still the last .so.
-# We also put pthreads after tcmalloc, because some pthread
-# implementations define their own malloc, and we need to go on the
-# first linkline to make sure our malloc 'wins'.
-tcmalloc_minimal_unittest_LDADD = libtcmalloc_minimal.la \
-                                  liblogging.la $(PTHREAD_LIBS)
-
-# lets make sure we exerice ASSERTs in at least in statically linked
-# configuration
-TESTS += tcm_min_asserts_unittest
-tcm_min_asserts_unittest_SOURCES = src/tests/tcmalloc_unittest.cc \
-                                    src/tests/testutil.h src/tests/testutil.cc \
-                                    $(libtcmalloc_minimal_internal_la_SOURCES) \
-                                    $(libtcmalloc_minimal_la_SOURCES) \
-                                    $(TCMALLOC_UNITTEST_INCLUDES)
-tcm_min_asserts_unittest_CXXFLAGS = -DNO_TCMALLOC_SAMPLES -DNO_HEAP_CHECK \
-                                    $(PTHREAD_CFLAGS) $(AM_CXXFLAGS)
-tcm_min_asserts_unittest_LDFLAGS = $(PTHREAD_CFLAGS) $(TCMALLOC_FLAGS)
-tcm_min_asserts_unittest_LDADD = $(LIBSPINLOCK) \
-                                  liblogging.la $(PTHREAD_LIBS)
-
-TESTS += tcmalloc_minimal_large_unittest
-WINDOWS_PROJECTS += vsprojects/tcmalloc_minimal_large/tcmalloc_minimal_large_unittest.vcxproj
-tcmalloc_minimal_large_unittest_SOURCES = src/tests/tcmalloc_large_unittest.cc
-tcmalloc_minimal_large_unittest_CXXFLAGS = $(PTHREAD_CFLAGS) $(AM_CXXFLAGS)
-tcmalloc_minimal_large_unittest_LDFLAGS = $(PTHREAD_CFLAGS) $(TCMALLOC_FLAGS)
-tcmalloc_minimal_large_unittest_LDADD = libtcmalloc_minimal.la $(PTHREAD_LIBS)
-
-TESTS += tcmalloc_minimal_large_heap_fragmentation_unittest
-tcmalloc_minimal_large_heap_fragmentation_unittest_SOURCES = src/tests/large_heap_fragmentation_unittest.cc
-tcmalloc_minimal_large_heap_fragmentation_unittest_CXXFLAGS = $(PTHREAD_CFLAGS) $(AM_CXXFLAGS)
-tcmalloc_minimal_large_heap_fragmentation_unittest_LDFLAGS = $(PTHREAD_CFLAGS) $(TCMALLOC_FLAGS)
-tcmalloc_minimal_large_heap_fragmentation_unittest_LDADD = libtcmalloc_minimal.la $(PTHREAD_LIBS)
-
-# These all tests components of tcmalloc_minimal
+### ------- unit tests for various internal modules of tcmalloc
 
 TESTS += addressmap_unittest
-WINDOWS_PROJECTS += vsprojects/addressmap_unittest/addressmap_unittest.vcxproj
-ADDRESSMAP_UNITTEST_INCLUDES = src/addressmap-inl.h \
-                               src/base/commandlineflags.h \
-                               $(LOGGING_INCLUDES)
-addressmap_unittest_SOURCES = src/tests/addressmap_unittest.cc \
-                              $(ADDRESSMAP_UNITTEST_INCLUDES)
-if MINGW
-addressmap_unittest_SOURCES += src/windows/port.h src/windows/port.cc
-endif MINGW
-addressmap_unittest_CXXFLAGS = -g $(AM_CXXFLAGS)
-addressmap_unittest_LDADD = liblogging.la
-
-WINDOWS_PROJECTS += vsprojects/system-alloc_unittest/system-alloc_unittest.vcxproj
-if !MINGW
-TESTS += system_alloc_unittest
-system_alloc_unittest_SOURCES = src/config_for_unittests.h \
-                                src/tests/system-alloc_unittest.cc
-system_alloc_unittest_CXXFLAGS = $(PTHREAD_CFLAGS) $(AM_CXXFLAGS)
-system_alloc_unittest_LDFLAGS = $(PTHREAD_CFLAGS) $(TCMALLOC_FLAGS)
-system_alloc_unittest_LDADD = libtcmalloc_minimal.la $(PTHREAD_LIBS)
-
-# Note, we skip this test on mingw (and windows in general). It uses
-# unsetenv, which is not available on win32.
-TESTS += unique_path_unittest
-unique_path_unittest_SOURCES = src/tests/unique_path_unittest.cc
-unique_path_unittest_CXXFLAGS = $(PTHREAD_CFLAGS) $(AM_CXXFLAGS)
-unique_path_unittest_LDFLAGS = $(PTHREAD_CFLAGS) $(AM_LDFLAGS)
-unique_path_unittest_LDADD = libsysinfo.la liblogging.la $(PTHREAD_LIBS)
-endif !MINGW
+addressmap_unittest_SOURCES = src/tests/addressmap_unittest.cc
+addressmap_unittest_CPPFLAGS = $(gtest_CPPFLAGS)
+addressmap_unittest_LDADD = libcommon.la libgtest.la
 
 TESTS += packed_cache_test
-WINDOWS_PROJECTS += vsprojects/packed-cache_test/packed-cache_test.vcxproj
-packed_cache_test_SOURCES = src/tests/packed-cache_test.cc
-packed_cache_test_CXXFLAGS = $(PTHREAD_CFLAGS) $(AM_CXXFLAGS)
-packed_cache_test_LDFLAGS = $(PTHREAD_CFLAGS) $(TCMALLOC_FLAGS)
-packed_cache_test_LDADD = libtcmalloc_minimal.la $(PTHREAD_LIBS)
+packed_cache_test_SOURCES = src/tests/packed-cache_test.cc src/internal_logging.cc
+packed_cache_test_CPPFLAGS = $(gtest_CPPFLAGS)
+packed_cache_test_LDADD = libcommon.la libgtest.la
 
-TESTS += frag_unittest
-WINDOWS_PROJECTS += vsprojects/frag_unittest/frag_unittest.vcxproj
-frag_unittest_SOURCES = src/tests/frag_unittest.cc src/config_for_unittests.h
-frag_unittest_CXXFLAGS = $(PTHREAD_CFLAGS) $(AM_CXXFLAGS)
-frag_unittest_LDFLAGS = $(PTHREAD_CFLAGS) $(TCMALLOC_FLAGS)
-frag_unittest_LDADD = libtcmalloc_minimal.la $(PTHREAD_LIBS)
+TESTS += safe_strerror_test
+safe_strerror_test_SOURCES = src/tests/safe_strerror_test.cc \
+                             src/safe_strerror.cc
+safe_strerror_test_CPPFLAGS = $(gtest_CPPFLAGS)
+safe_strerror_test_LDADD = libcommon.la libgtest.la
 
-TESTS += markidle_unittest
-WINDOWS_PROJECTS += vsprojects/markidle_unittest/markidle_unittest.vcxproj
-markidle_unittest_SOURCES = src/tests/markidle_unittest.cc \
-                            src/config_for_unittests.h \
-                            src/tests/testutil.h src/tests/testutil.cc
-markidle_unittest_CXXFLAGS = $(PTHREAD_CFLAGS) $(AM_CXXFLAGS)
-markidle_unittest_LDFLAGS = $(PTHREAD_CFLAGS) $(TCMALLOC_FLAGS)
-markidle_unittest_LDADD = libtcmalloc_minimal.la $(PTHREAD_LIBS)
+TESTS += cleanup_test
+cleanup_test_SOURCES = src/tests/cleanup_test.cc
+cleanup_test_CPPFLAGS = $(gtest_CPPFLAGS)
+cleanup_test_LDADD = libgtest.la
 
-TESTS += current_allocated_bytes_test
-WINDOWS_PROJECTS += vsprojects/current_allocated_bytes_test/current_allocated_bytes_test.vcxproj
-current_allocated_bytes_test_SOURCES = src/tests/current_allocated_bytes_test.cc \
-                                       src/config_for_unittests.h
-current_allocated_bytes_test_CXXFLAGS = $(PTHREAD_CFLAGS) $(AM_CXXFLAGS)
-current_allocated_bytes_test_LDFLAGS = $(PTHREAD_CFLAGS) $(TCMALLOC_FLAGS)
-current_allocated_bytes_test_LDADD = libtcmalloc_minimal.la $(PTHREAD_LIBS)
+TESTS += function_ref_test
+function_ref_test_SOURCES = src/tests/function_ref_test.cc
+function_ref_test_CPPFLAGS = $(gtest_CPPFLAGS)
+function_ref_test_LDADD = libgtest.la
+
+TESTS += pagemap_unittest
+pagemap_unittest_SOURCES = src/tests/pagemap_unittest.cc \
+                           src/internal_logging.cc
+pagemap_unittest_CPPFLAGS = $(gtest_CPPFLAGS)
+pagemap_unittest_LDADD = libcommon.la libgtest.la
+
+# note, it is not so great that page heap testing requires bringing
+# almost entirety of tcmalloc (short of tcmalloc.cc), but it is what
+# we have.
+TESTS += page_heap_test
+page_heap_test_SOURCES = src/tests/page_heap_test.cc \
+                         $(libtcmalloc_minimal_la_SOURCES)
+page_heap_test_CXXFLAGS = -DNO_HEAP_CHECK -DNO_TCMALLOC_SAMPLES $(AM_CXXFLAGS)
+page_heap_test_CPPFLAGS = $(gtest_CPPFLAGS)
+page_heap_test_LDADD = libcommon.la libgtest.la
+
+# note, it is not so great that stack_trace_table testing requires
+# bringing almost entirety of tcmalloc (short of tcmalloc.cc), but it
+# is what we have.
+TESTS += stack_trace_table_test
+stack_trace_table_test_SOURCES = src/tests/stack_trace_table_test.cc \
+                                 src/stack_trace_table.cc src/internal_logging.cc
+stack_trace_table_test_CPPFLAGS = $(gtest_CPPFLAGS)
+stack_trace_table_test_CXXFLAGS = -DSTACK_TRACE_TABLE_IS_TESTED $(AM_CXXFLAGS)
+stack_trace_table_test_LDADD = libcommon.la libgtest.la
 
 TESTS += malloc_hook_test
-WINDOWS_PROJECTS += vsprojects/malloc_hook_test/malloc_hook_test.vcxproj
 malloc_hook_test_SOURCES = src/tests/malloc_hook_test.cc \
-                           src/config_for_unittests.h \
-                           src/base/logging.h \
-                           src/gperftools/malloc_hook.h \
-                           src/tests/testutil.h src/tests/testutil.cc
-malloc_hook_test_CXXFLAGS = $(PTHREAD_CFLAGS) $(AM_CXXFLAGS)
-malloc_hook_test_LDFLAGS = $(PTHREAD_CFLAGS) $(TCMALLOC_FLAGS)
-malloc_hook_test_LDADD = libtcmalloc_minimal.la $(PTHREAD_LIBS)
+                           src/tests/testutil.cc \
+                           src/malloc_hook.cc
+malloc_hook_test_CXXFLAGS = -DNO_TCMALLOC_SAMPLES $(AM_CXXFLAGS)
+malloc_hook_test_CPPFLAGS = $(gtest_CPPFLAGS)
+malloc_hook_test_LDADD = libcommon.la libgtest.la
 
 if WITH_HEAP_PROFILER_OR_CHECKER
 if !MINGW
 TESTS += mmap_hook_test
 mmap_hook_test_SOURCES = src/tests/mmap_hook_test.cc \
-                         src/mmap_hook.cc
-mmap_hook_test_LDADD = $(LIBSPINLOCK)
+                         src/mmap_hook.cc \
+                         src/malloc_backtrace.cc
+mmap_hook_test_CPPFLAGS = $(gtest_CPPFLAGS)
+mmap_hook_test_LDADD = libstacktrace.la libcommon.la libgtest.la
 endif !MINGW
 endif WITH_HEAP_PROFILER_OR_CHECKER
 
-TESTS += malloc_extension_test
-WINDOWS_PROJECTS += vsprojects/malloc_extension_test/malloc_extension_test.vcxproj
-malloc_extension_test_SOURCES = src/tests/malloc_extension_test.cc \
-                                src/config_for_unittests.h \
-                                src/base/logging.h \
-                                src/gperftools/malloc_extension.h \
-                                src/gperftools/malloc_extension_c.h
-malloc_extension_test_CXXFLAGS = $(PTHREAD_CFLAGS) $(AM_CXXFLAGS)
-malloc_extension_test_LDFLAGS = $(PTHREAD_CFLAGS) $(TCMALLOC_FLAGS)
-malloc_extension_test_LDADD = libtcmalloc_minimal.la $(PTHREAD_LIBS)
+TESTS += sampler_test
+sampler_test_SOURCES = src/tests/sampler_test.cc \
+                       src/sampler.cc
+sampler_test_CPPFLAGS = $(gtest_CPPFLAGS)
+sampler_test_LDADD = libcommon.la libgtest.la
 
-# This doesn't work with mingw, which links foo.a even though it
-# doesn't set ENABLE_STATIC.  TODO(csilvers): set enable_static=true
-# in configure.ac:36?
+### Unittests for libtcmalloc_minimal.la
+
+TESTS += tcmalloc_minimal_unittest
+tcmalloc_minimal_unittest_SOURCES = src/tests/tcmalloc_unittest.cc \
+                                    src/tests/testutil.cc
+tcmalloc_minimal_unittest_LDFLAGS = $(TCMALLOC_FLAGS) $(AM_LDFLAGS)
+tcmalloc_minimal_unittest_CPPFLAGS = $(gtest_CPPFLAGS)
+tcmalloc_minimal_unittest_LDADD = libtcmalloc_minimal.la libgtest.la
+
+# lets make sure we exerice ASSERTs in at least in statically linked
+# configuration
+TESTS += tcm_min_asserts_unittest
+tcm_min_asserts_unittest_SOURCES = src/tests/tcmalloc_unittest.cc \
+                                   src/tests/testutil.cc \
+                                   $(libtcmalloc_minimal_la_SOURCES)
+tcm_min_asserts_unittest_CXXFLAGS = -DNO_TCMALLOC_SAMPLES -DNO_HEAP_CHECK \
+                                    $(AM_CXXFLAGS)
+tcm_min_asserts_unittest_CPPFLAGS = $(gtest_CPPFLAGS)
+tcm_min_asserts_unittest_LDFLAGS = $(TCMALLOC_FLAGS) $(AM_LDFLAGS)
+tcm_min_asserts_unittest_LDADD = libcommon.la libgtest.la
+
+TESTS += tcmalloc_minimal_large_unittest
+tcmalloc_minimal_large_unittest_SOURCES = src/tests/tcmalloc_large_unittest.cc
+tcmalloc_minimal_large_unittest_LDFLAGS = $(TCMALLOC_FLAGS) $(AM_LDFLAGS)
+tcmalloc_minimal_large_unittest_LDADD = libtcmalloc_minimal.la
+
+TESTS += tcmalloc_minimal_large_heap_fragmentation_unittest
+tcmalloc_minimal_large_heap_fragmentation_unittest_SOURCES = src/tests/large_heap_fragmentation_unittest.cc
+tcmalloc_minimal_large_heap_fragmentation_unittest_LDFLAGS = $(TCMALLOC_FLAGS) $(AM_LDFLAGS)
+tcmalloc_minimal_large_heap_fragmentation_unittest_CPPFLAGS = $(gtest_CPPFLAGS)
+tcmalloc_minimal_large_heap_fragmentation_unittest_LDADD = libtcmalloc_minimal.la libgtest.la
+
 if !MINGW
-TESTS += malloc_extension_c_test
-malloc_extension_c_test_SOURCES = src/tests/malloc_extension_c_test.cc \
-                                  src/gperftools/malloc_extension.h \
-                                  src/gperftools/malloc_extension_c.h
-malloc_extension_c_test_CFLAGS = $(PTHREAD_CFLAGS) $(AM_CFLAGS)
-malloc_extension_c_test_LDFLAGS = $(PTHREAD_CFLAGS) $(TCMALLOC_FLAGS)
-malloc_extension_c_test_LDADD = libtcmalloc_minimal.la
+TESTS += system_alloc_unittest
+system_alloc_unittest_SOURCES = src/tests/system-alloc_unittest.cc
+system_alloc_unittest_LDFLAGS = $(TCMALLOC_FLAGS) $(AM_LDFLAGS)
+system_alloc_unittest_CPPFLAGS = $(gtest_CPPFLAGS)
+system_alloc_unittest_LDADD = libtcmalloc_minimal.la libgtest.la
 endif !MINGW
+
+TESTS += frag_unittest
+frag_unittest_SOURCES = src/tests/frag_unittest.cc
+frag_unittest_LDFLAGS = $(TCMALLOC_FLAGS) $(AM_LDFLAGS)
+frag_unittest_CPPFLAGS = $(gtest_CPPFLAGS)
+frag_unittest_LDADD = libtcmalloc_minimal.la libgtest.la
+
+TESTS += markidle_unittest
+markidle_unittest_SOURCES = src/tests/markidle_unittest.cc
+markidle_unittest_LDFLAGS = $(TCMALLOC_FLAGS) $(AM_LDFLAGS)
+markidle_unittest_CPPFLAGS = $(gtest_CPPFLAGS)
+markidle_unittest_LDADD = libtcmalloc_minimal.la libgtest.la
+
+TESTS += current_allocated_bytes_test
+current_allocated_bytes_test_SOURCES = src/tests/current_allocated_bytes_test.cc
+current_allocated_bytes_test_LDFLAGS = $(TCMALLOC_FLAGS) $(AM_LDFLAGS)
+current_allocated_bytes_test_CPPFLAGS = $(gtest_CPPFLAGS)
+current_allocated_bytes_test_LDADD = libtcmalloc_minimal.la libgtest.la
+
+TESTS += malloc_extension_test
+malloc_extension_test_SOURCES = src/tests/malloc_extension_test.cc
+malloc_extension_test_LDFLAGS = $(TCMALLOC_FLAGS) $(AM_LDFLAGS)
+malloc_extension_test_CPPFLAGS = $(gtest_CPPFLAGS)
+malloc_extension_test_LDADD = libtcmalloc_minimal.la libgtest.la
+
+TESTS += malloc_extension_c_test
+malloc_extension_c_test_SOURCES = src/tests/malloc_extension_c_test.cc
+malloc_extension_c_test_LDFLAGS = $(TCMALLOC_FLAGS) $(AM_LDFLAGS)
+malloc_extension_c_test_CPPFLAGS = $(gtest_CPPFLAGS)
+malloc_extension_c_test_LDADD = libtcmalloc_minimal.la libgtest.la
 
 if !MINGW
 if !OSX
 TESTS += memalign_unittest
 memalign_unittest_SOURCES = src/tests/memalign_unittest.cc \
-                            src/tcmalloc.h \
-                            src/config_for_unittests.h \
-                            src/tests/testutil.h src/tests/testutil.cc
-memalign_unittest_CXXFLAGS = $(PTHREAD_CFLAGS) $(AM_CXXFLAGS)
-memalign_unittest_LDFLAGS = $(PTHREAD_CFLAGS) $(TCMALLOC_FLAGS)
-memalign_unittest_LDADD = libtcmalloc_minimal.la $(PTHREAD_LIBS)
+                            src/tests/testutil.cc
+memalign_unittest_LDFLAGS = $(TCMALLOC_FLAGS) $(AM_LDFLAGS)
+memalign_unittest_CPPFLAGS = $(gtest_CPPFLAGS)
+memalign_unittest_LDADD = libtcmalloc_minimal.la libgtest.la
 endif !OSX
 endif !MINGW
 
-TESTS += page_heap_test
-WINDOWS_PROJECTS += vsprojects/page_heap_test/page_heap_test.vcxproj
-page_heap_test_SOURCES = src/tests/page_heap_test.cc \
-                         src/config_for_unittests.h \
-                         src/base/logging.h \
-                         src/common.h \
-                         src/page_heap.h
-page_heap_test_CXXFLAGS = $(PTHREAD_CFLAGS) $(AM_CXXFLAGS)
-page_heap_test_LDFLAGS = $(PTHREAD_CFLAGS) $(TCMALLOC_FLAGS)
-page_heap_test_LDADD = libtcmalloc_minimal.la $(PTHREAD_LIBS)
-
-TESTS += pagemap_unittest
-WINDOWS_PROJECTS += vsprojects/pagemap_unittest/pagemap_unittest.vcxproj
-pagemap_unittest_SOURCES = src/tests/pagemap_unittest.cc \
-                           src/config_for_unittests.h \
-                           src/base/logging.h \
-                           src/pagemap.h
-pagemap_unittest_CXXFLAGS = $(PTHREAD_CFLAGS) $(AM_CXXFLAGS)
-pagemap_unittest_LDFLAGS = $(PTHREAD_CFLAGS) $(TCMALLOC_FLAGS)
-pagemap_unittest_LDADD = libtcmalloc_minimal.la $(PTHREAD_LIBS)
-
-TESTS += safe_strerror_test
-safe_strerror_test_SOURCES = src/tests/safe_strerror_test.cc \
-                             src/safe_strerror.cc
-safe_strerror_test_LDADD = liblogging.la
-
 TESTS += realloc_unittest
-WINDOWS_PROJECTS += vsprojects/realloc_unittest/realloc_unittest.vcxproj
-realloc_unittest_SOURCES = src/tests/realloc_unittest.cc \
-                           src/config_for_unittests.h \
-                           src/base/logging.h
-realloc_unittest_CXXFLAGS = $(PTHREAD_CFLAGS) $(AM_CXXFLAGS)
-realloc_unittest_LDFLAGS = $(PTHREAD_CFLAGS) $(TCMALLOC_FLAGS)
-realloc_unittest_LDADD = libtcmalloc_minimal.la $(PTHREAD_LIBS)
-
-TESTS += stack_trace_table_test
-WINDOWS_PROJECTS += vsprojects/stack_trace_table_test/stack_trace_table_test.vcxproj
-stack_trace_table_test_SOURCES = src/tests/stack_trace_table_test.cc \
-                                 src/config_for_unittests.h
-stack_trace_table_test_CXXFLAGS = $(PTHREAD_CFLAGS) $(AM_CXXFLAGS)
-stack_trace_table_test_LDFLAGS = $(PTHREAD_CFLAGS) $(TCMALLOC_FLAGS)
-stack_trace_table_test_LDADD = libtcmalloc_minimal.la $(PTHREAD_LIBS)
+realloc_unittest_SOURCES = src/tests/realloc_unittest.cc
+realloc_unittest_LDFLAGS = $(TCMALLOC_FLAGS) $(AM_LDFLAGS)
+realloc_unittest_CPPFLAGS = $(gtest_CPPFLAGS)
+realloc_unittest_LDADD = libtcmalloc_minimal.la libgtest.la
 
 TESTS += thread_dealloc_unittest
-WINDOWS_PROJECTS += vsprojects/thread_dealloc_unittest/thread_dealloc_unittest.vcxproj
 thread_dealloc_unittest_SOURCES = src/tests/thread_dealloc_unittest.cc \
-                                  src/config_for_unittests.h \
-                                  src/tests/testutil.h src/tests/testutil.cc
-thread_dealloc_unittest_CXXFLAGS = $(PTHREAD_CFLAGS) $(AM_CXXFLAGS)
-thread_dealloc_unittest_LDFLAGS = $(PTHREAD_CFLAGS) $(TCMALLOC_FLAGS)
-thread_dealloc_unittest_LDADD = libtcmalloc_minimal.la $(PTHREAD_LIBS)
+                                  src/tests/testutil.cc
+thread_dealloc_unittest_LDFLAGS = $(TCMALLOC_FLAGS) $(AM_LDFLAGS)
+thread_dealloc_unittest_LDADD = libtcmalloc_minimal.la
+
+TESTS += min_per_thread_cache_size_test
+min_per_thread_cache_size_test_SOURCES = src/tests/min_per_thread_cache_size_test.cc
+min_per_thread_cache_size_test_LDFLAGS = $(TCMALLOC_FLAGS) $(AM_LDFLAGS)
+min_per_thread_cache_size_test_CPPFLAGS = $(gtest_CPPFLAGS)
+min_per_thread_cache_size_test_LDADD = libtcmalloc_minimal.la libgtest.la
 
 ### Documentation
 dist_doc_DATA += docs/tcmalloc.html \
@@ -734,31 +517,25 @@ dist_doc_DATA += docs/overview.dot \
 if WITH_DEBUGALLOC
 
 lib_LTLIBRARIES += libtcmalloc_minimal_debug.la
-libtcmalloc_minimal_debug_la_SOURCES = src/debugallocation.cc \
-                                       $(TCMALLOC_MINIMAL_INCLUDES)
-libtcmalloc_minimal_debug_la_CXXFLAGS = $(libtcmalloc_minimal_la_CXXFLAGS) \
-                                        -DTCMALLOC_FOR_DEBUGALLOCATION
-# version_info gets passed to libtool
-libtcmalloc_minimal_debug_la_LDFLAGS = $(libtcmalloc_minimal_la_LDFLAGS) \
-                                       -version-info @TCMALLOC_SO_VERSION@
+libtcmalloc_minimal_debug_la_SOURCES = src/debugallocation.cc $(MINIMAL_MALLOC_SRC)
+libtcmalloc_minimal_debug_la_CXXFLAGS = $(libtcmalloc_minimal_la_CXXFLAGS)
+libtcmalloc_minimal_debug_la_LDFLAGS = $(libtcmalloc_minimal_la_LDFLAGS)
 libtcmalloc_minimal_debug_la_LIBADD = $(libtcmalloc_minimal_la_LIBADD)
-
-LIBS_TO_WEAKEN += libtcmalloc_minimal_debug.la
 
 ### Unittests
 
 TESTS += tcmalloc_minimal_debug_unittest
 tcmalloc_minimal_debug_unittest_SOURCES = $(tcmalloc_minimal_unittest_SOURCES)
-tcmalloc_minimal_debug_unittest_CXXFLAGS = $(tcmalloc_minimal_unittest_CXXFLAGS) \
-                                           -DDEBUGALLOCATION
 tcmalloc_minimal_debug_unittest_LDFLAGS = $(tcmalloc_minimal_unittest_LDFLAGS)
-tcmalloc_minimal_debug_unittest_LDADD = libtcmalloc_minimal_debug.la $(PTHREAD_LIBS)
+tcmalloc_minimal_debug_unittest_CPPFLAGS = $(gtest_CPPFLAGS)
+tcmalloc_minimal_debug_unittest_LDADD = libtcmalloc_minimal_debug.la libgtest.la
 
 TESTS += malloc_extension_debug_test
 malloc_extension_debug_test_SOURCES = $(malloc_extension_test_SOURCES)
 malloc_extension_debug_test_CXXFLAGS = $(malloc_extension_test_CXXFLAGS)
 malloc_extension_debug_test_LDFLAGS = $(malloc_extension_test_LDFLAGS)
-malloc_extension_debug_test_LDADD = libtcmalloc_minimal_debug.la $(PTHREAD_LIBS)
+malloc_extension_debug_test_CPPFLAGS = $(gtest_CPPFLAGS)
+malloc_extension_debug_test_LDADD = libtcmalloc_minimal_debug.la libgtest.la
 
 if !MINGW
 if !OSX
@@ -766,7 +543,8 @@ TESTS += memalign_debug_unittest
 memalign_debug_unittest_SOURCES = $(memalign_unittest_SOURCES)
 memalign_debug_unittest_CXXFLAGS = $(memalign_unittest_CXXFLAGS)
 memalign_debug_unittest_LDFLAGS = $(memalign_unittest_LDFLAGS)
-memalign_debug_unittest_LDADD = libtcmalloc_minimal_debug.la $(PTHREAD_LIBS)
+memalign_debug_unittest_CPPFLAGS = $(gtest_CPPFLAGS)
+memalign_debug_unittest_LDADD = libtcmalloc_minimal_debug.la libgtest.la
 endif !OSX
 endif !MINGW
 
@@ -774,25 +552,18 @@ TESTS += realloc_debug_unittest
 realloc_debug_unittest_SOURCES = $(realloc_unittest_SOURCES)
 realloc_debug_unittest_CXXFLAGS = $(realloc_unittest_CXXFLAGS)
 realloc_debug_unittest_LDFLAGS = $(realloc_unittest_LDFLAGS)
-realloc_debug_unittest_LDADD = libtcmalloc_minimal_debug.la $(PTHREAD_LIBS)
+realloc_debug_unittest_CPPFLAGS = $(gtest_CPPFLAGS)
+realloc_debug_unittest_LDADD = libtcmalloc_minimal_debug.la libgtest.la
 
 # debugallocation_test checks that we print a proper stacktrace when
 # debug-allocs fail, so we can't run it if we don't have stacktrace info.
 if WITH_STACK_TRACE
-TESTS += debugallocation_test.sh$(EXEEXT)
-debugallocation_test_sh_SOURCES = src/tests/debugallocation_test.sh
-noinst_SCRIPTS += $(debugallocation_test_sh_SOURCES)
-debugallocation_test.sh$(EXEEXT): $(top_srcdir)/$(debugallocation_test_sh_SOURCES) \
-                                  debugallocation_test
-	rm -f $@
-	cp -p $(top_srcdir)/$(debugallocation_test_sh_SOURCES) $@
 
-# This is the sub-program used by debugallocation_test.sh
-noinst_PROGRAMS += debugallocation_test
+TESTS += debugallocation_test
 debugallocation_test_SOURCES = src/tests/debugallocation_test.cc
-debugallocation_test_CXXFLAGS = $(PTHREAD_CFLAGS) $(AM_CXXFLAGS)
-debugallocation_test_LDFLAGS = $(PTHREAD_CFLAGS) $(TCMALLOC_FLAGS)
-debugallocation_test_LDADD = libtcmalloc_debug.la $(PTHREAD_LIBS)
+debugallocation_test_LDFLAGS = $(TCMALLOC_FLAGS) $(AM_LDFLAGS)
+debugallocation_test_CPPFLAGS = $(gtest_CPPFLAGS)
+debugallocation_test_LDADD = libtcmalloc_debug.la libgtest.la
 endif WITH_STACK_TRACE
 
 endif WITH_DEBUGALLOC
@@ -806,181 +577,103 @@ noinst_PROGRAMS += malloc_bench malloc_bench_shared \
 	binary_trees binary_trees_shared
 
 malloc_bench_SOURCES = benchmark/malloc_bench.cc
-malloc_bench_CXXFLAGS = $(PTHREAD_CFLAGS) $(AM_CXXFLAGS)
-malloc_bench_LDFLAGS = $(PTHREAD_CFLAGS) $(TCMALLOC_FLAGS)
+malloc_bench_LDFLAGS = $(TCMALLOC_FLAGS) $(AM_LDFLAGS)
 if ENABLE_STATIC
 malloc_bench_LDFLAGS += -static
 endif ENABLE_STATIC
-malloc_bench_LDADD = librun_benchmark.la libtcmalloc_minimal.la $(PTHREAD_LIBS)
+malloc_bench_LDADD = librun_benchmark.la libtcmalloc_minimal.la
 
 malloc_bench_shared_SOURCES = benchmark/malloc_bench.cc
-malloc_bench_shared_CXXFLAGS = $(PTHREAD_CFLAGS) $(AM_CXXFLAGS)
-malloc_bench_shared_LDFLAGS = $(PTHREAD_CFLAGS) $(TCMALLOC_FLAGS)
-malloc_bench_shared_LDADD = librun_benchmark.la libtcmalloc_minimal.la $(PTHREAD_LIBS)
+malloc_bench_shared_LDFLAGS = $(TCMALLOC_FLAGS) $(AM_LDFLAGS)
+malloc_bench_shared_LDADD = librun_benchmark.la libtcmalloc_minimal.la
 
 if WITH_HEAP_PROFILER_OR_CHECKER
 
 noinst_PROGRAMS += malloc_bench_shared_full
 malloc_bench_shared_full_SOURCES = benchmark/malloc_bench.cc
-malloc_bench_shared_full_CXXFLAGS = $(PTHREAD_CFLAGS) $(AM_CXXFLAGS)
-malloc_bench_shared_full_LDFLAGS = $(PTHREAD_CFLAGS) $(TCMALLOC_FLAGS)
-malloc_bench_shared_full_LDADD = librun_benchmark.la libtcmalloc.la $(PTHREAD_LIBS)
+malloc_bench_shared_full_LDFLAGS = $(TCMALLOC_FLAGS) $(AM_LDFLAGS)
+malloc_bench_shared_full_LDADD = librun_benchmark.la libtcmalloc.la
 
 noinst_PROGRAMS += unwind_bench
 unwind_bench_SOURCES = benchmark/unwind_bench.cc
-unwind_bench_CXXFLAGS = $(PTHREAD_CFLAGS) $(AM_CXXFLAGS) $(NO_BUILTIN_CXXFLAGS)
-unwind_bench_LDFLAGS = $(PTHREAD_CFLAGS) $(TCMALLOC_FLAGS)
-unwind_bench_LDADD = librun_benchmark.la libtcmalloc.la $(PTHREAD_LIBS)
+unwind_bench_LDFLAGS = $(TCMALLOC_FLAGS) $(AM_LDFLAGS)
+unwind_bench_LDADD = librun_benchmark.la libtcmalloc.la
 
 endif WITH_HEAP_PROFILER_OR_CHECKER
 
 binary_trees_SOURCES = benchmark/binary_trees.cc
-binary_trees_CXXFLAGS = $(PTHREAD_CFLAGS) $(AM_CXXFLAGS)
-binary_trees_LDFLAGS = $(PTHREAD_CFLAGS) $(TCMALLOC_FLAGS)
+binary_trees_LDFLAGS = $(TCMALLOC_FLAGS) $(AM_LDFLAGS)
 if ENABLE_STATIC
 binary_trees_LDFLAGS += -static
 endif ENABLE_STATIC
-binary_trees_LDADD = libtcmalloc_minimal.la $(PTHREAD_LIBS)
+binary_trees_LDADD = libtcmalloc_minimal.la
 
 binary_trees_shared_SOURCES = benchmark/binary_trees.cc
-binary_trees_shared_CXXFLAGS = $(PTHREAD_CFLAGS) $(AM_CXXFLAGS)
-binary_trees_shared_LDFLAGS = $(PTHREAD_CFLAGS) $(TCMALLOC_FLAGS)
-binary_trees_shared_LDADD = libtcmalloc_minimal.la $(PTHREAD_LIBS)
+binary_trees_shared_LDFLAGS = $(TCMALLOC_FLAGS) $(AM_LDFLAGS)
+binary_trees_shared_LDADD = libtcmalloc_minimal.la
 endif !MINGW
 
 ### ------- tcmalloc (thread-caching malloc + heap profiler + heap checker)
 
 if WITH_HEAP_PROFILER_OR_CHECKER
 
-### The header files we use.  We divide into categories based on directory
-S_TCMALLOC_INCLUDES = $(S_TCMALLOC_MINIMAL_INCLUDES) \
-                      $(LOGGING_INCLUDES) \
-                      src/addressmap-inl.h \
-                      src/raw_printer.h \
-                      src/base/googleinit.h \
-                      src/base/linuxthreads.h \
-                      src/base/stl_allocator.h \
-                      src/base/sysinfo.h \
-                      src/heap-profile-table.h \
-                      src/heap-profile-stats.h \
-                      src/maybe_emergency_malloc.h \
-                      src/emergency_malloc.h \
-                      src/mmap_hook.h
-
-SG_TCMALLOC_INCLUDES = src/gperftools/heap-profiler.h \
-                       src/gperftools/heap-checker.h
-TCMALLOC_INCLUDES = $(S_TCMALLOC_INCLUDES) $(SG_TCMALLOC_MINIMAL_INCLUDES) \
-		    $(SG_TCMALLOC_INCLUDES) $(SG_STACKTRACE_INCLUDES)
-perftoolsinclude_HEADERS += $(SG_TCMALLOC_INCLUDES)
-googleinclude_HEADERS += src/google/heap-profiler.h \
-                         src/google/heap-checker.h
+perftoolsinclude_HEADERS += src/gperftools/heap-profiler.h \
+                            src/gperftools/heap-checker.h
 
 if BUILD_EMERGENCY_MALLOC
-EMERGENCY_MALLOC_CC = src/emergency_malloc.cc src/emergency_malloc_for_stacktrace.cc
+EMERGENCY_MALLOC_CC = src/emergency_malloc.cc
 EMERGENCY_MALLOC_DEFINE = -DENABLE_EMERGENCY_MALLOC
 else !BUILD_EMERGENCY_MALLOC
-EMERGENCY_MALLOC_CC = src/fake_stacktrace_scope.cc
+EMERGENCY_MALLOC_CC =
 EMERGENCY_MALLOC_DEFINE =
 endif !BUILD_EMERGENCY_MALLOC
 
 ### Making the library
 
 if WITH_HEAP_CHECKER
-# heap-checker-bcad is last, in hopes its global ctor will run first.
-# (Note this is added to libtcmalloc.la, not libtcmalloc_internal.la,
-# but that's ok; the internal/external distinction is only useful for
-# cygwin, and cygwin doesn't use HEAP_CHECKER anyway.)
 HEAP_CHECKER_SOURCES = src/base/linuxthreads.cc \
-                       src/heap-checker.cc \
-                       src/heap-checker-bcad.cc
+                       src/heap-checker.cc
 MAYBE_NO_HEAP_CHECK =
 else !WITH_HEAP_CHECKER
 HEAP_CHECKER_SOURCES =
 MAYBE_NO_HEAP_CHECK = -DNO_HEAP_CHECK
 endif !WITH_HEAP_CHECKER
 
-noinst_LTLIBRARIES += libtcmalloc_internal.la
-libtcmalloc_internal_la_SOURCES = $(libtcmalloc_minimal_internal_la_SOURCES) \
-                                  $(TCMALLOC_INCLUDES) \
-                                  src/base/low_level_alloc.cc \
-                                  src/heap-profile-table.cc \
-                                  src/heap-profiler.cc \
-                                  src/raw_printer.cc \
-                                  $(EMERGENCY_MALLOC_CC) \
-                                  src/mmap_hook.cc \
-                                  src/memory_region_map.cc
-libtcmalloc_internal_la_CXXFLAGS = $(PTHREAD_CFLAGS) -DNDEBUG \
-                                   $(AM_CXXFLAGS) $(EMERGENCY_MALLOC_DEFINE) \
-                                   $(MAYBE_NO_HEAP_CHECK)
-libtcmalloc_internal_la_LDFLAGS = $(PTHREAD_CFLAGS)
-libtcmalloc_internal_la_LIBADD = libstacktrace.la $(PTHREAD_LIBS)
-
+FULL_MALLOC_SRC = $(HEAP_CHECKER_SOURCES) \
+                  $(MINIMAL_MALLOC_SRC) \
+                  src/base/low_level_alloc.cc \
+                  src/heap-profile-table.cc \
+                  src/heap-profiler.cc \
+                  $(EMERGENCY_MALLOC_CC) \
+                  src/malloc_backtrace.cc \
+                  src/mmap_hook.cc \
+                  src/memory_region_map.cc
 lib_LTLIBRARIES += libtcmalloc.la
-libtcmalloc_la_SOURCES = $(TCMALLOC_CC) $(TCMALLOC_INCLUDES) \
-                         $(HEAP_CHECKER_SOURCES)
-libtcmalloc_la_CXXFLAGS = $(PTHREAD_CFLAGS) -DNDEBUG $(AM_CXXFLAGS) \
+libtcmalloc_la_SOURCES = $(TCMALLOC_CC) $(FULL_MALLOC_SRC)
+libtcmalloc_la_CXXFLAGS = -DNDEBUG $(AM_CXXFLAGS) \
                           $(MAYBE_NO_HEAP_CHECK) $(EMERGENCY_MALLOC_DEFINE)
-libtcmalloc_la_LDFLAGS = $(PTHREAD_CFLAGS) -version-info @TCMALLOC_SO_VERSION@
-libtcmalloc_la_LIBADD = libtcmalloc_internal.la $(PTHREAD_LIBS)
-
-# same as above with without -DNDEBUG
-noinst_LTLIBRARIES += libtcmalloc_internal_with_asserts.la
-libtcmalloc_internal_with_asserts_la_SOURCES = $(libtcmalloc_internal_la_SOURCES)
-libtcmalloc_internal_with_asserts_la_CXXFLAGS = $(PTHREAD_CFLAGS) \
-                                   $(AM_CXXFLAGS) $(EMERGENCY_MALLOC_DEFINE) \
-                                   $(MAYBE_NO_HEAP_CHECK)
-libtcmalloc_internal_with_asserts_la_LDFLAGS = $(PTHREAD_CFLAGS)
-libtcmalloc_internal_with_asserts_la_LIBADD = libstacktrace.la $(PTHREAD_LIBS)
-
-noinst_LTLIBRARIES += libtcmalloc_with_asserts.la
-libtcmalloc_with_asserts_la_SOURCES = $(libtcmalloc_la_SOURCES)
-libtcmalloc_with_asserts_la_CXXFLAGS =  $(PTHREAD_CFLAGS) $(AM_CXXFLAGS) \
-                          $(MAYBE_NO_HEAP_CHECK) $(EMERGENCY_MALLOC_DEFINE)
-libtcmalloc_with_asserts_la_LDFLAGS = $(PTHREAD_CFLAGS)
-libtcmalloc_with_asserts_la_LIBADD = libtcmalloc_internal_with_asserts.la $(PTHREAD_LIBS)
-
-LIBTCMALLOC = libtcmalloc.la
-
-LIBS_TO_WEAKEN += libtcmalloc.la
+libtcmalloc_la_LDFLAGS = -version-info @TCMALLOC_SO_VERSION@ $(AM_LDFLAGS)
+libtcmalloc_la_LIBADD = libstacktrace.la libcommon.la
 
 ### Unittests
 
-TESTS += tcmalloc_unittest.sh$(EXEEXT)
-tcmalloc_unittest_sh_SOURCES = src/tests/tcmalloc_unittest.sh
-noinst_SCRIPTS += $(tcmalloc_unittest_sh_SOURCES)
-tcmalloc_unittest.sh$(EXEEXT): $(top_srcdir)/$(tcmalloc_unittest_sh_SOURCES) \
-                               tcmalloc_unittest
-	rm -f $@
-	cp -p $(top_srcdir)/$(tcmalloc_unittest_sh_SOURCES) $@
-
-noinst_PROGRAMS += tcmalloc_unittest
-tcmalloc_unittest_INCLUDES = src/config_for_unittests.h \
-                             src/gperftools/malloc_extension.h
+TESTS += tcmalloc_unittest
 tcmalloc_unittest_SOURCES = src/tests/tcmalloc_unittest.cc \
-                            src/tcmalloc.h \
-                            src/tests/testutil.h src/tests/testutil.cc \
-                            $(TCMALLOC_UNITTEST_INCLUDES)
-tcmalloc_unittest_CXXFLAGS = $(PTHREAD_CFLAGS) $(AM_CXXFLAGS)
-tcmalloc_unittest_LDFLAGS = $(PTHREAD_CFLAGS) $(TCMALLOC_FLAGS)
-# We want libtcmalloc last on the link line, but due to a bug in
-# libtool involving convenience libs, they need to come last on the
-# link line in order to get dependency ordering right.  This is ok:
-# convenience libraries are .a's, so tcmalloc is still the last .so.
-# We also put pthreads after tcmalloc, because some pthread
-# implementations define their own malloc, and we need to go on the
-# first linkline to make sure our malloc 'wins'.
-tcmalloc_unittest_LDADD = $(LIBTCMALLOC) liblogging.la $(PTHREAD_LIBS)
+                            src/tests/testutil.cc
+tcmalloc_unittest_LDFLAGS = $(TCMALLOC_FLAGS) $(AM_LDFLAGS)
+tcmalloc_unittest_CPPFLAGS = $(gtest_CPPFLAGS)
+tcmalloc_unittest_LDADD = libtcmalloc.la libgtest.la
 
 TESTS += tcm_asserts_unittest
-tcm_asserts_unittest_INCLUDES = src/config_for_unittests.h \
-                             src/gperftools/malloc_extension.h
 tcm_asserts_unittest_SOURCES = src/tests/tcmalloc_unittest.cc \
-                            src/tcmalloc.h \
-                            src/tests/testutil.h src/tests/testutil.cc \
-                            $(TCMALLOC_UNITTEST_INCLUDES)
-tcm_asserts_unittest_CXXFLAGS = $(PTHREAD_CFLAGS) $(AM_CXXFLAGS)
-tcm_asserts_unittest_LDFLAGS = $(PTHREAD_CFLAGS) $(TCMALLOC_FLAGS)
-tcm_asserts_unittest_LDADD = libtcmalloc_with_asserts.la liblogging.la $(PTHREAD_LIBS)
+                               src/tests/testutil.cc \
+                               $(libtcmalloc_la_SOURCES)
+# same cxxflags as libtcmalloc.la but without NDEBUG
+tcm_asserts_unittest_CXXFLAGS = $(AM_CXXFLAGS) \
+                                $(MAYBE_NO_HEAP_CHECK) \
+                                $(EMERGENCY_MALLOC_DEFINE)
+tcm_asserts_unittest_CPPFLAGS = $(gtest_CPPFLAGS)
+tcm_asserts_unittest_LDADD = libstacktrace.la libcommon.la libgtest.la
 
 # This makes sure it's safe to link in both tcmalloc and
 # tcmalloc_minimal.  (One would never do this on purpose, but perhaps
@@ -990,86 +683,40 @@ tcm_asserts_unittest_LDADD = libtcmalloc_with_asserts.la liblogging.la $(PTHREAD
 # the code tends to pick one arbitrarily), so don't run the test there.
 # (We define these outside the 'if' because they're reused below.)
 tcmalloc_both_unittest_srcs = src/tests/tcmalloc_unittest.cc \
-                              src/tests/testutil.h src/tests/testutil.cc \
-                              $(TCMALLOC_UNITTEST_INCLUDES)
-tcmalloc_both_unittest_cflags = $(PTHREAD_CFLAGS) $(AM_CXXFLAGS)
-tcmalloc_both_unittest_lflags = $(PTHREAD_CFLAGS) $(TCMALLOC_FLAGS)
+                              src/tests/testutil.h src/tests/testutil.cc
+tcmalloc_both_unittest_lflags = $(TCMALLOC_FLAGS) $(AM_LDFLAGS)
+tcmalloc_both_unittest_ladd = libtcmalloc.la libtcmalloc_minimal.la libgtest.la
 if WITH_CPU_PROFILER
-# We want libtcmalloc last on the link line, but due to a bug in
-# libtool involving convenience libs, they need to come last on the
-# link line in order to get dependency ordering right.  This is ok:
-# convenience libraries are .a's, so tcmalloc is still the last .so.
-# We also put pthreads after tcmalloc, because some pthread
-# implementations define their own malloc, and we need to go on the
-# first linkline to make sure our malloc 'wins'.
-tcmalloc_both_unittest_ladd = $(LIBTCMALLOC) libtcmalloc_minimal.la \
-                              libprofiler.la liblogging.la $(PTHREAD_LIBS)
-else
-tcmalloc_both_unittest_ladd = $(LIBTCMALLOC) libtcmalloc_minimal.la \
-                              liblogging.la $(PTHREAD_LIBS)
-endif !WITH_CPU_PROFILER
+tcmalloc_both_unittest_ladd += libprofiler.la
+endif WITH_CPU_PROFILER
+
 if !OSX
 TESTS += tcmalloc_both_unittest
 tcmalloc_both_unittest_SOURCES = $(tcmalloc_both_unittest_srcs)
-tcmalloc_both_unittest_CXXFLAGS = $(tcmalloc_both_unittest_cflags)
 tcmalloc_both_unittest_LDFLAGS = $(tcmalloc_both_unittest_lflags)
+tcmalloc_both_unittest_CPPFLAGS = $(gtest_CPPFLAGS)
 tcmalloc_both_unittest_LDADD = $(tcmalloc_both_unittest_ladd)
 endif !OSX
 
 TESTS += tcmalloc_large_unittest
 tcmalloc_large_unittest_SOURCES = src/tests/tcmalloc_large_unittest.cc
-tcmalloc_large_unittest_CXXFLAGS = $(PTHREAD_CFLAGS) $(AM_CXXFLAGS)
-tcmalloc_large_unittest_LDFLAGS = $(PTHREAD_CFLAGS) $(TCMALLOC_FLAGS)
-tcmalloc_large_unittest_LDADD = $(LIBTCMALLOC) $(PTHREAD_LIBS)
+tcmalloc_large_unittest_LDFLAGS = $(TCMALLOC_FLAGS) $(AM_LDFLAGS)
+tcmalloc_large_unittest_LDADD = libtcmalloc.la $(PTHREAD_LIBS)
 
 TESTS += tcmalloc_large_heap_fragmentation_unittest
 tcmalloc_large_heap_fragmentation_unittest_SOURCES = src/tests/large_heap_fragmentation_unittest.cc
-tcmalloc_large_heap_fragmentation_unittest_CXXFLAGS = $(PTHREAD_CFLAGS) $(AM_CXXFLAGS)
-tcmalloc_large_heap_fragmentation_unittest_LDFLAGS = $(PTHREAD_CFLAGS) $(TCMALLOC_FLAGS)
-tcmalloc_large_heap_fragmentation_unittest_LDADD = $(LIBTCMALLOC) $(PTHREAD_LIBS)
-
-TESTS += raw_printer_test
-raw_printer_test_SOURCES = src/tests/raw_printer_test.cc
-raw_printer_test_CXXFLAGS = $(PTHREAD_CFLAGS) $(AM_CXXFLAGS)
-raw_printer_test_LDFLAGS = $(PTHREAD_CFLAGS) $(TCMALLOC_FLAGS)
-raw_printer_test_LDADD = $(LIBTCMALLOC) $(PTHREAD_LIBS)
-
-# sampler_test and sampling_test both require sampling to be turned
-# on, which it's not by default.  Use the "standard" value of 2^19.
-TESTS_ENVIRONMENT += TCMALLOC_SAMPLE_PARAMETER=524288
-
-TESTS += sampler_test
-WINDOWS_PROJECTS += vsprojects/sampler_test/sampler_test.vcxproj
-sampler_test_SOURCES = src/tests/sampler_test.cc \
-                       src/config_for_unittests.h
-sampler_test_CXXFLAGS = $(PTHREAD_CFLAGS) $(AM_CXXFLAGS)
-sampler_test_LDFLAGS = $(PTHREAD_CFLAGS) $(TCMALLOC_FLAGS)
-sampler_test_LDADD = $(LIBTCMALLOC) $(PTHREAD_LIBS) -lm
-
+tcmalloc_large_heap_fragmentation_unittest_LDFLAGS = $(TCMALLOC_FLAGS) $(AM_LDFLAGS)
+tcmalloc_large_heap_fragmentation_unittest_CPPFLAGS = $(gtest_CPPFLAGS)
+tcmalloc_large_heap_fragmentation_unittest_LDADD = libtcmalloc.la libgtest.la
 
 # These unittests often need to run binaries.  They're in the current dir
 TESTS_ENVIRONMENT += BINDIR=.
-TESTS_ENVIRONMENT += TMPDIR=/tmp/perftools
 
-TESTS += sampling_test.sh$(EXEEXT)
-sampling_test_sh_SOURCES = src/tests/sampling_test.sh
-noinst_SCRIPTS += $(sampling_test_sh_SOURCES)
-sampling_test.sh$(EXEEXT): $(top_srcdir)/$(sampling_test_sh_SOURCES) \
-                           sampling_test
-	rm -f $@
-	cp -p $(top_srcdir)/$(sampling_test_sh_SOURCES) $@
-
-# This is the sub-program used by sampling_test.sh
-# The -g is so pprof can get symbol information.
-noinst_PROGRAMS += sampling_test
-SAMPLING_TEST_INCLUDES = src/config_for_unittests.h \
-                         src/base/logging.h \
-                         src/gperftools/malloc_extension.h
-sampling_test_SOURCES = src/tests/sampling_test.cc \
-                        $(SAMPLING_TEST_INCLUDES)
-sampling_test_CXXFLAGS = -g $(PTHREAD_CFLAGS) $(AM_CXXFLAGS)
-sampling_test_LDFLAGS = -g $(PTHREAD_CFLAGS) $(TCMALLOC_FLAGS)
-sampling_test_LDADD = $(LIBTCMALLOC) $(PTHREAD_LIBS)
+TESTS += sampling_test
+sampling_test_SOURCES = src/tests/sampling_test.cc
+sampling_test_LDFLAGS = $(TCMALLOC_FLAGS) $(AM_LDFLAGS)
+sampling_test_CPPFLAGS = $(AM_CPPFLAGS) "-DPPROF_PATH=$(top_srcdir)/src/pprof"
+sampling_test_LDADD = libtcmalloc.la
 
 endif WITH_HEAP_PROFILER_OR_CHECKER
 
@@ -1085,21 +732,9 @@ heap-profiler_unittest.sh$(EXEEXT): $(top_srcdir)/$(heap_profiler_unittest_sh_SO
 
 # These are sub-programs used by heap-profiler_unittest.sh
 noinst_PROGRAMS += heap-profiler_unittest
-HEAP_PROFILER_UNITTEST_INCLUDES = src/config_for_unittests.h \
-                                  src/gperftools/heap-profiler.h
-heap_profiler_unittest_SOURCES = src/tests/heap-profiler_unittest.cc \
-                                 $(HEAP_PROFILER_UNITTEST_INCLUDES)
-heap_profiler_unittest_CXXFLAGS = -g $(PTHREAD_CFLAGS) $(AM_CXXFLAGS)
-heap_profiler_unittest_LDFLAGS = -g $(PTHREAD_CFLAGS) $(TCMALLOC_FLAGS)
-heap_profiler_unittest_LDADD = $(LIBTCMALLOC) $(PTHREAD_LIBS)
-
-# Tests the compatibility include-headers in google/.  Requires a function
-# defined in the heap-profiler, which is why the test lives here.
-TESTS += simple_compat_test
-simple_compat_test_SOURCES = src/tests/simple_compat_test.cc \
-                             $(googleinclude_HEADERS)
-simple_compat_test_LDFLAGS = $(TCMALLOC_FLAGS)
-simple_compat_test_LDADD = $(LIBTCMALLOC)
+heap_profiler_unittest_SOURCES = src/tests/heap-profiler_unittest.cc
+heap_profiler_unittest_LDFLAGS = $(TCMALLOC_FLAGS) $(AM_LDFLAGS)
+heap_profiler_unittest_LDADD = libtcmalloc.la
 
 endif WITH_HEAP_PROFILER
 
@@ -1115,24 +750,9 @@ heap-checker-death_unittest.sh$(EXEEXT): $(heap_checker_death_unittest_sh_SOURCE
 
 # These are sub-programs used by heap-checker_unittest.sh
 TESTS += heap-checker_unittest
-HEAP_CHECKER_UNITTEST_INCLUDES = src/config_for_unittests.h \
-                                 src/memory_region_map.h \
-                                 src/base/commandlineflags.h \
-                                 src/base/googleinit.h \
-                                 src/gperftools/heap-checker.h \
-                                 $(LOGGING_INCLUDES)
-heap_checker_unittest_SOURCES = src/tests/heap-checker_unittest.cc \
-                                $(HEAP_CHECKER_UNITTEST_INCLUDES)
-heap_checker_unittest_CXXFLAGS = -g $(PTHREAD_CFLAGS) $(AM_CXXFLAGS)
-heap_checker_unittest_LDFLAGS = -g $(PTHREAD_CFLAGS) $(TCMALLOC_FLAGS)
-# We want libtcmalloc last on the link line, but due to a bug in
-# libtool involving convenience libs, they need to come last on the
-# link line in order to get dependency ordering right.  This is ok:
-# convenience libraries are .a's, so tcmalloc is still the last .so.
-# We also put pthreads after tcmalloc, because some pthread
-# implementations define their own malloc, and we need to go on the
-# first linkline to make sure our malloc 'wins'.
-heap_checker_unittest_LDADD = $(LIBTCMALLOC) liblogging.la $(PTHREAD_LIBS)
+heap_checker_unittest_SOURCES = src/tests/heap-checker_unittest.cc
+heap_checker_unittest_LDFLAGS = $(TCMALLOC_FLAGS) $(AM_LDFLAGS)
+heap_checker_unittest_LDADD = libtcmalloc.la libcommon.la
 
 endif WITH_HEAP_CHECKER
 
@@ -1152,46 +772,25 @@ if WITH_DEBUGALLOC
 if WITH_HEAP_PROFILER_OR_CHECKER
 
 lib_LTLIBRARIES += libtcmalloc_debug.la
-libtcmalloc_debug_la_SOURCES = src/debugallocation.cc $(HEAP_CHECKER_SOURCES) \
-                               $(TCMALLOC_INCLUDES)
-libtcmalloc_debug_la_CXXFLAGS = $(libtcmalloc_la_CXXFLAGS) \
-                                -DTCMALLOC_FOR_DEBUGALLOCATION
-libtcmalloc_debug_la_LDFLAGS = $(libtcmalloc_la_LDFLAGS) \
-                               -version-info @TCMALLOC_SO_VERSION@
+libtcmalloc_debug_la_SOURCES = src/debugallocation.cc $(FULL_MALLOC_SRC)
+libtcmalloc_debug_la_CXXFLAGS = $(libtcmalloc_la_CXXFLAGS)
+libtcmalloc_debug_la_LDFLAGS = $(libtcmalloc_la_LDFLAGS)
 libtcmalloc_debug_la_LIBADD = $(libtcmalloc_la_LIBADD)
-
-LIBS_TO_WEAKEN += libtcmalloc_debug.la
 
 ### Unittests
 
 TESTS += tcmalloc_debug_unittest
 tcmalloc_debug_unittest_SOURCES = $(tcmalloc_unittest_SOURCES)
-tcmalloc_debug_unittest_CXXFLAGS = $(tcmalloc_unittest_CXXFLAGS) \
-                                   -DDEBUGALLOCATION
 tcmalloc_debug_unittest_LDFLAGS = $(tcmalloc_unittest_LDFLAGS)
-tcmalloc_debug_unittest_LDADD = libtcmalloc_debug.la $(PTHREAD_LIBS)
+tcmalloc_debug_unittest_CPPFLAGS = $(gtest_CPPFLAGS)
+tcmalloc_debug_unittest_LDADD = libtcmalloc_debug.la libgtest.la
 
-TESTS += sampler_debug_test
-sampler_debug_test_SOURCES = $(sampler_test_SOURCES)
-sampler_debug_test_CXXFLAGS = $(samples_test_CXXFLAGS)
-sampler_debug_test_LDFLAGS = $(sampler_test_LDFLAGS)
-sampler_debug_test_LDADD = libtcmalloc_debug.la $(PTHREAD_LIBS) -lm
-
-TESTS += sampling_debug_test.sh$(EXEEXT)
-sampling_debug_test_sh_SOURCES = src/tests/sampling_test.sh
-sampling_debug_test.sh$(EXEEXT): $(top_srcdir)/$(sampling_test_sh_SOURCES) \
-                                 sampling_debug_test
-	rm -f $@
-	sed -e 's/sampling_test/sampling_debug_test/g' <$(top_srcdir)/$(sampling_test_sh_SOURCES) >$@
-	chmod +x $@
-
-# This is the sub-program using by sampling_debug_test.sh
-# The -g is so pprof can get symbol information.
-noinst_PROGRAMS += sampling_debug_test
+TESTS += sampling_debug_test
 sampling_debug_test_SOURCES = $(sampling_test_SOURCES)
 sampling_debug_test_CXXFLAGS = $(sampling_test_CXXFLAGS)
+sampling_debug_test_CPPFLAGS = $(sampling_test_CPPFLAGS)
 sampling_debug_test_LDFLAGS = $(sampling_test_LDFLAGS)
-sampling_debug_test_LDADD = libtcmalloc_debug.la $(PTHREAD_LIBS)
+sampling_debug_test_LDADD = libtcmalloc_debug.la
 
 endif WITH_HEAP_PROFILER_OR_CHECKER
 
@@ -1209,7 +808,7 @@ noinst_PROGRAMS += heap-profiler_debug_unittest
 heap_profiler_debug_unittest_SOURCES = $(heap_profiler_unittest_SOURCES)
 heap_profiler_debug_unittest_CXXFLAGS = $(heap_profiler_unittest_CXXFLAGS)
 heap_profiler_debug_unittest_LDFLAGS = $(heap_profiler_unittest_LDFLAGS)
-heap_profiler_debug_unittest_LDADD = libtcmalloc_debug.la $(PTHREAD_LIBS)
+heap_profiler_debug_unittest_LDADD = libtcmalloc_debug.la
 
 endif WITH_HEAP_PROFILER
 
@@ -1219,12 +818,7 @@ TESTS += heap-checker_debug_unittest
 heap_checker_debug_unittest_SOURCES = $(heap_checker_unittest_SOURCES)
 heap_checker_debug_unittest_CXXFLAGS = $(heap_checker_unittest_CXXFLAGS)
 heap_checker_debug_unittest_LDFLAGS = $(heap_checker_unittest_LDFLAGS)
-# We want libtcmalloc last on the link line, but due to a bug in
-# libtool involving convenience libs, they need to come last on the
-# link line in order to get dependency ordering right.  This is ok:
-# convenience libraries are .a's, so tcmalloc is still the last .so.
-heap_checker_debug_unittest_LDADD = libtcmalloc_debug.la liblogging.la \
-                                    $(PTHREAD_LIBS)
+heap_checker_debug_unittest_LDADD = libtcmalloc_debug.la libcommon.la
 
 endif WITH_HEAP_CHECKER
 endif WITH_DEBUGALLOC
@@ -1234,33 +828,14 @@ endif WITH_DEBUGALLOC
 
 if WITH_CPU_PROFILER
 
-### The header files we use.  We divide into categories based on directory
-S_CPU_PROFILER_INCLUDES = src/profiledata.h \
-                          src/profile-handler.h \
-                          src/getpc.h \
-                          src/getpc-inl.h \
-                          src/base/basictypes.h \
-                          src/base/commandlineflags.h \
-                          src/base/googleinit.h \
-                          src/base/logging.h \
-                          src/base/simple_mutex.h \
-                          src/base/sysinfo.h \
-                          $(SPINLOCK_INCLUDES) \
-                          $(LOGGING_INCLUDES)
-SG_CPU_PROFILER_INCLUDES = src/gperftools/profiler.h
-CPU_PROFILER_INCLUDES = $(S_CPU_PROFILER_INCLUDES) $(SG_CPU_PROFILER_INCLUDES) \
-			$(SG_STACKTRACE_INCLUDES)
-perftoolsinclude_HEADERS += $(SG_CPU_PROFILER_INCLUDES)
-googleinclude_HEADERS += src/google/profiler.h
+perftoolsinclude_HEADERS += src/gperftools/profiler.h
 
 ### Making the library
 lib_LTLIBRARIES += libprofiler.la
 libprofiler_la_SOURCES = src/profiler.cc \
                          src/profile-handler.cc \
-                         src/profiledata.cc \
-                         $(CPU_PROFILER_INCLUDES)
-libprofiler_la_LIBADD = libstacktrace.la libfake_stacktrace_scope.la $(PTHREAD_LIBS)
-libprofiler_la_CXXFLAGS = $(PTHREAD_CFLAGS) $(AM_CXXFLAGS)
+                         src/profiledata.cc
+libprofiler_la_LIBADD = libstacktrace.la libcommon.la
 # We have to include ProfileData for profiledata_unittest
 CPU_PROFILER_SYMBOLS = '(ProfilerStart|ProfilerStartWithOptions|ProfilerStop|ProfilerFlush|ProfilerEnable|ProfilerDisable|ProfilingIsEnabledForAllThreads|ProfilerRegisterThread|ProfilerGetCurrentState|ProfilerState|ProfileData|ProfileHandler|ProfilerGetStackTrace)'
 libprofiler_la_LDFLAGS = -export-symbols-regex $(CPU_PROFILER_SYMBOLS) \
@@ -1268,24 +843,17 @@ libprofiler_la_LDFLAGS = -export-symbols-regex $(CPU_PROFILER_SYMBOLS) \
 
 ### Unittests
 TESTS += getpc_test
-#WINDOWS_PROJECTS += vsprojects/getpc_test/getpc_test.vcxproj
 getpc_test_SOURCES = src/tests/getpc_test.cc src/getpc.h
 
 TESTS += profiledata_unittest
-#WINDOWS_PROJECTS += vsprojects/profiledata_unittest/profiledata_unittest.vcxproj
-profiledata_unittest_SOURCES = src/tests/profiledata_unittest.cc \
-                               src/profiledata.h \
-                               src/base/commandlineflags.h \
-                               src/base/logging.h \
-                               src/base/basictypes.h
-profiledata_unittest_LDADD = libprofiler.la
+profiledata_unittest_SOURCES = src/tests/profiledata_unittest.cc src/profiledata.cc
+profiledata_unittest_CPPFLAGS = $(gtest_CPPFLAGS)
+profiledata_unittest_LDADD = libstacktrace.la libcommon.la libgtest.la
 
 TESTS += profile_handler_unittest
-profile_handler_unittest_SOURCES = src/tests/profile-handler_unittest.cc \
-                                   src/profile-handler.h
-profile_handler_unittest_CXXFLAGS = $(PTHREAD_CFLAGS) $(AM_CXXFLAGS)
-profile_handler_unittest_LDFLAGS = $(PTHREAD_CFLAGS) $(AM_LDFLAGS)
-profile_handler_unittest_LDADD = libprofiler.la $(PTHREAD_LIBS)
+profile_handler_unittest_SOURCES = src/tests/profile-handler_unittest.cc src/profile-handler.cc
+profile_handler_unittest_CPPFLAGS = $(gtest_CPPFLAGS)
+profile_handler_unittest_LDADD = libstacktrace.la libcommon.la libgtest.la
 
 TESTS += profiler_unittest.sh$(EXEEXT)
 profiler_unittest_sh_SOURCES = src/tests/profiler_unittest.sh
@@ -1299,11 +867,8 @@ profiler_unittest.sh$(EXEEXT): $(top_srcdir)/$(profiler_unittest_sh_SOURCES) \
 # These are sub-programs used by profiler_unittest.sh
 noinst_PROGRAMS += profiler1_unittest profiler2_unittest profiler3_unittest \
                    profiler4_unittest
-PROFILER_UNITTEST_INCLUDES = src/config_for_unittests.h \
-                             src/gperftools/profiler.h
 PROFILER_UNITTEST_SRCS = src/tests/profiler_unittest.cc \
-                         src/tests/testutil.h src/tests/testutil.cc \
-                         $(PROFILER_UNITTEST_INCLUDES)
+                         src/tests/testutil.cc
 profiler1_unittest_SOURCES = $(PROFILER_UNITTEST_SRCS)
 profiler1_unittest_CXXFLAGS = -g -DNO_THREADS $(AM_CXXFLAGS)
 profiler1_unittest_LDADD = libprofiler.la
@@ -1313,13 +878,11 @@ profiler2_unittest_LDADD = -lstacktrace -lprofiler
 # We depend on -lprofiler but haven't yet said how to build it.  Do so now.
 profiler2_unittest_DEPENDENCIES = libprofiler.la
 profiler3_unittest_SOURCES = $(PROFILER_UNITTEST_SRCS)
-profiler3_unittest_CXXFLAGS = -g $(PTHREAD_CFLAGS) $(AM_CXXFLAGS)
-profiler3_unittest_LDFLAGS = $(PTHREAD_CFLAGS)
-profiler3_unittest_LDADD = libprofiler.la $(PTHREAD_LIBS)
+profiler3_unittest_CXXFLAGS = -g $(AM_CXXFLAGS)
+profiler3_unittest_LDADD = libprofiler.la
 profiler4_unittest_SOURCES = $(PROFILER_UNITTEST_SRCS)
-profiler4_unittest_CXXFLAGS = -g $(PTHREAD_CFLAGS) $(AM_CXXFLAGS)
-profiler4_unittest_LDFLAGS = $(PTHREAD_CFLAGS)
-profiler4_unittest_LDADD = -lstacktrace -lprofiler $(PTHREAD_LIBS)
+profiler4_unittest_CXXFLAGS = -g $(AM_CXXFLAGS)
+profiler4_unittest_LDADD = -lstacktrace -lprofiler
 # We depend on -lprofiler but haven't yet said how to build it.  Do so now.
 profiler4_unittest_DEPENDENCIES = libprofiler.la
 
@@ -1351,34 +914,20 @@ libtcmalloc_and_profiler_la_SOURCES = $(libtcmalloc_la_SOURCES) $(libprofiler_la
 libtcmalloc_and_profiler_la_CXXFLAGS = $(libtcmalloc_la_CXXFLAGS) $(libprofiler_la_CXXFLAGS)
 # Since this library is meant to be used as a .a, I don't worry as much
 # about .so versioning.  I just give the libtcmalloc version number.
-# TODO(csilvers): use -export-symbols-regex?
-libtcmalloc_and_profiler_la_LDFLAGS = $(PTHREAD_CFLAGS) \
-                                      -version-info @TCMALLOC_AND_PROFILER_SO_VERSION@
-# We don't include libprofiler_la_LIBADD here because all it adds is
-# libstacktrace.la, which we already get via libtcmalloc.  Trying to
-# specify it twice causes link-time duplicate-definition errors. :-(
+libtcmalloc_and_profiler_la_LDFLAGS = -version-info @TCMALLOC_AND_PROFILER_SO_VERSION@ \
+                                      $(AM_LDFLAGS)
 libtcmalloc_and_profiler_la_LIBADD = $(libtcmalloc_la_LIBADD)
 
 TESTS += tcmalloc_and_profiler_unittest
 tcmalloc_and_profiler_unittest_SOURCES = $(tcmalloc_both_unittest_srcs)
-tcmalloc_and_profiler_unittest_CXXFLAGS = $(tcmalloc_both_unittest_cflags)
 tcmalloc_and_profiler_unittest_LDFLAGS = $(tcmalloc_both_unittest_lflags)
-tcmalloc_and_profiler_unittest_LDADD = libtcmalloc_and_profiler.la
-
-LIBS_TO_WEAKEN += libtcmalloc_and_profiler.la
+tcmalloc_and_profiler_unittest_CPPFLAGS = $(gtest_CPPFLAGS)
+tcmalloc_and_profiler_unittest_LDADD = libtcmalloc_and_profiler.la libgtest.la
 
 endif WITH_CPU_PROFILER
 endif WITH_HEAP_PROFILER_OR_CHECKER
 
 ## ^^^^ END OF RULES TO MAKE YOUR LIBRARIES, BINARIES, AND UNITTESTS
-
-
-# Do the weakening on some exported libtcmalloc symbols.
-run-weaken: all-am
-	for la in $(LIBS_TO_WEAKEN); do lib=".libs/`basename $$la .la`.a"; [ ! -f "$$lib" ] || $(WEAKEN) "$$lib"; done
-
-install-exec-local: run-weaken
-all: run-weaken
 
 # This should always include $(TESTS), but may also include other
 # binaries that you compile but don't want automatically installed.
@@ -1404,9 +953,6 @@ pkgconfig_DATA += libprofiler.pc
 endif WITH_CPU_PROFILER
 CLEANFILES = $(pkgconfig_DATA)
 
-# I get the description and URL lines from the rpm spec. I use sed to
-# try to rewrite exec_prefix, libdir, and includedir in terms of
-# prefix, if possible.
 libtcmalloc.pc: Makefile
 	echo 'prefix=$(prefix)' > "$@".tmp
 	echo 'exec_prefix='`echo '$(exec_prefix)' | sed 's@^$(prefix)@$${prefix}@'` >> "$@".tmp
@@ -1423,7 +969,6 @@ libtcmalloc.pc: Makefile
 	echo 'Cflags: -I$${includedir}' >> "$@".tmp
 	mv -f "$@".tmp "$@"
 
-# The other versions are mostly the same.
 libtcmalloc_minimal.pc: libtcmalloc.pc
 	cat libtcmalloc.pc | sed s/-ltcmalloc/-ltcmalloc_minimal/ > "$@"
 
@@ -1443,15 +988,17 @@ $(top_distdir)/ChangeLog:
 	       | fmt --split-only >$(top_distdir)/ChangeLog; \
 	  else cp $(top_srcdir)/ChangeLog $(top_distdir)/ChangeLog; fi
 
+EXTRA_DIST = $(SCRIPTS) \
+             src/windows/get_mangled_names.cc src/windows/override_functions.cc \
+             docs/pprof.see_also $(WINDOWS_EXTRA) \
+             gperftools.sln vsprojects vendor \
+             $(top_srcdir)/src/*h $(top_srcdir)/src/base/*h \
+             $(top_srcdir)/src/tests/*h \
+             $(top_srcdir)/src/windows/*h $(top_srcdir)/src/gperftools/*h \
+             CMakeLists.txt cmake
+
 # Windows wants write permission to .vcxproj files and maybe even sln files.
 dist-hook: $(top_distdir)/ChangeLog
 	test -e "$(distdir)/vsprojects" \
 	   && chmod -R u+w $(distdir)/*.sln $(distdir)/vsprojects/
-
-EXTRA_DIST = $(SCRIPTS) \
-             src/windows/get_mangled_names.cc src/windows/override_functions.cc \
-             src/windows/config.h src/windows/gperftools/tcmalloc.h \
-             docs/pprof.see_also src/windows/TODO \
-             $(WINDOWS_PROJECTS) \
-             src/solaris/libstdc++.la \
-             CMakeLists.txt cmake
+	rm -f $(distdir)/src/config.h $(distdir)/src/gperftools/tcmalloc.h

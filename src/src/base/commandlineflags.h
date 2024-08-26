@@ -57,13 +57,13 @@
 
 #define DECLARE_VARIABLE(type, name)                                          \
   namespace FLAG__namespace_do_not_use_directly_use_DECLARE_##type##_instead {  \
-  extern PERFTOOLS_DLL_DECL type FLAGS_##name;                                \
+  extern type FLAGS_##name;                                \
   }                                                                           \
   using FLAG__namespace_do_not_use_directly_use_DECLARE_##type##_instead::FLAGS_##name
 
 #define DEFINE_VARIABLE(type, name, value, meaning) \
   namespace FLAG__namespace_do_not_use_directly_use_DECLARE_##type##_instead {  \
-  PERFTOOLS_DLL_DECL type FLAGS_##name(value);                                \
+  type FLAGS_##name(value);                                \
   char FLAGS_no##name;                                                        \
   }                                                                           \
   using FLAG__namespace_do_not_use_directly_use_DECLARE_##type##_instead::FLAGS_##name
@@ -74,22 +74,22 @@
 #define DEFINE_bool(name, value, meaning) \
   DEFINE_VARIABLE(bool, name, value, meaning)
 
-// int32 specialization
+// int32_t specialization
 #define DECLARE_int32(name) \
-  DECLARE_VARIABLE(int32, name)
+  DECLARE_VARIABLE(int32_t, name)
 #define DEFINE_int32(name, value, meaning) \
-  DEFINE_VARIABLE(int32, name, value, meaning)
+  DEFINE_VARIABLE(int32_t, name, value, meaning)
 
-// int64 specialization
+// int64_t specialization
 #define DECLARE_int64(name) \
-  DECLARE_VARIABLE(int64, name)
+  DECLARE_VARIABLE(int64_t, name)
 #define DEFINE_int64(name, value, meaning) \
-  DEFINE_VARIABLE(int64, name, value, meaning)
+  DEFINE_VARIABLE(int64_t, name, value, meaning)
 
 #define DECLARE_uint64(name) \
-  DECLARE_VARIABLE(uint64, name)
+  DECLARE_VARIABLE(uint64_t, name)
 #define DEFINE_uint64(name, value, meaning) \
-  DEFINE_VARIABLE(uint64, name, value, meaning)
+  DEFINE_VARIABLE(uint64_t, name, value, meaning)
 
 // double specialization
 #define DECLARE_double(name) \

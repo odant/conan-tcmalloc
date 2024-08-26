@@ -46,6 +46,7 @@
 #include "port.h"
 #include "base/logging.h"
 #include "base/spinlock.h"
+#include "base/threading.h"
 #include "internal_logging.h"
 
 // -----------------------------------------------------------------------
@@ -63,11 +64,6 @@ int getpagesize() {
   return pagesize;
 }
 
-extern "C" PERFTOOLS_DLL_DECL void* __sbrk(ptrdiff_t increment) {
-  LOG(FATAL, "Windows doesn't implement sbrk!\n");
-  return NULL;
-}
-
 // We need to write to 'stderr' without having windows allocate memory.
 // The safest way is via a low-level call like WriteConsoleA().  But
 // even then we need to be sure to print in small bursts so as to not
@@ -83,7 +79,7 @@ extern "C" PERFTOOLS_DLL_DECL void WriteToStderr(const char* buf, int len) {
 // -----------------------------------------------------------------------
 // Threads code
 
-// Windows doesn't support pthread_key_create's destr_function, and in
+// Windows doesn't support tcmalloc::CreateTlsKey's destr_function, and in
 // fact it's a bit tricky to get code to run when a thread exits.  This
 // is cargo-cult magic from https://www.codeproject.com/Articles/8113/Thread-Local-Storage-The-C-Way
 // and http://lallouslab.net/2017/05/30/using-cc-tls-callbacks-in-visual-studio-with-your-32-or-64bits-programs/.
@@ -111,7 +107,7 @@ extern "C" PERFTOOLS_DLL_DECL void WriteToStderr(const char* buf, int len) {
 #endif
 
 // When destr_fn eventually runs, it's supposed to take as its
-// argument the tls-value associated with key that pthread_key_create
+// argument the tls-value associated with key that tcmalloc::CreateTlsKey
 // creates.  (Yeah, it sounds confusing but it's really not.)  We
 // store the destr_fn/key pair in this data structure.  Because we
 // store this in a single var, this implies we can only have one
@@ -120,7 +116,7 @@ extern "C" PERFTOOLS_DLL_DECL void WriteToStderr(const char* buf, int len) {
 // into an array.
 struct DestrFnClosure {
   void (*destr_fn)(void*);
-  pthread_key_t key_for_destr_fn_arg;
+  tcmalloc::TlsKey key_for_destr_fn_arg;
 };
 
 static DestrFnClosure destr_fn_info;   // initted to all NULL/0.
@@ -186,11 +182,11 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD dwReason, PVOID pv) {
 
 #endif  // #ifdef _MSC_VER
 
-extern "C" pthread_key_t PthreadKeyCreate(void (*destr_fn)(void*)) {
+tcmalloc::TlsKey tcmalloc::WinTlsKeyCreate(void (*destr_fn)(void*)) {
   // Semantics are: we create a new key, and then promise to call
   // destr_fn with TlsGetValue(key) when the thread is destroyed
   // (as long as TlsGetValue(key) is not NULL).
-  pthread_key_t key = TlsAlloc();
+  tcmalloc::TlsKey key = TlsAlloc();
   if (destr_fn) {   // register it
     // If this assert fails, we'll need to support an array of destr_fn_infos
     assert(destr_fn_info.destr_fn == NULL);

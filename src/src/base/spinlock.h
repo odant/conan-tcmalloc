@@ -46,24 +46,12 @@
 
 #include "base/basictypes.h"
 #include "base/dynamic_annotations.h"
+#include "base/static_storage.h"
 #include "base/thread_annotations.h"
 
 class LOCKABLE SpinLock {
  public:
-  SpinLock() : lockword_(kSpinLockFree) { }
-
-  // Special constructor for use with static SpinLock objects.  E.g.,
-  //
-  //    static SpinLock lock(base::LINKER_INITIALIZED);
-  //
-  // When intialized using this constructor, we depend on the fact
-  // that the linker has already initialized the memory appropriately.
-  // A SpinLock constructed like this can be freely used from global
-  // initializers without worrying about the order in which global
-  // initializers run.
-  explicit SpinLock(base::LinkerInitialized /*x*/) {
-    // Does nothing; lockword_ is already initialized
-  }
+  constexpr SpinLock() : lockword_(kSpinLockFree) { }
 
   // Acquire this SpinLock.
   void Lock() EXCLUSIVE_LOCK_FUNCTION() {
@@ -98,7 +86,6 @@ class LOCKABLE SpinLock {
     return lockword_.load(std::memory_order_relaxed) != kSpinLockFree;
   }
 
-  static const base::LinkerInitialized LINKER_INITIALIZED;  // backwards compat
  private:
   enum { kSpinLockFree = 0 };
   enum { kSpinLockHeld = 1 };
@@ -129,7 +116,7 @@ class SCOPED_LOCKABLE SpinLockHolder {
   }
 };
 // Catch bug where variable name is omitted, e.g. SpinLockHolder (&lock);
-#define SpinLockHolder(x) COMPILE_ASSERT(0, spin_lock_decl_missing_var_name)
+#define SpinLockHolder(x) static_assert(0)
 
 namespace tcmalloc {
 
@@ -142,7 +129,7 @@ public:
       return false;
     }
 
-    SpinLockHolder h(reinterpret_cast<SpinLock*>(&lock_storage_));
+    SpinLockHolder h(lock_storage_.get());
 
     if (done_atomic->load(std::memory_order_relaxed) == 1) {
       // barrier provided by lock
@@ -155,7 +142,7 @@ public:
 
 private:
   int done_flag_;
-  alignas(alignof(SpinLock)) char lock_storage_[sizeof(SpinLock)];
+  StaticStorage<SpinLock> lock_storage_;
 };
 
 static_assert(std::is_trivial<TrivialOnce>::value == true, "");

@@ -82,10 +82,13 @@
 #define BASE_ADDRESSMAP_INL_H_
 
 #include "config.h"
+
 #include <stddef.h>
 #include <string.h>
-#include <stdint.h>             // to get uint16_t (ISO naming madness)
-#include <inttypes.h>           // another place uint16_t might be defined
+#include <stdint.h>
+#include <inttypes.h>
+
+#include "base/function_ref.h"
 
 // This class is thread-unsafe -- that is, instances of this class can
 // not be accessed concurrently by multiple threads -- because the
@@ -135,10 +138,7 @@ class AddressMap {
 
   // Iterate over the address map calling 'callback'
   // for all stored key-value pairs and passing 'arg' to it.
-  // We don't use full Closure/Callback machinery not to add
-  // unnecessary dependencies to this class with low-level uses.
-  template<class Type>
-  inline void Iterate(void (*callback)(Key, Value*, Type), Type arg) const;
+  void Iterate(tcmalloc::FunctionRef<void(Key, Value*)> body) const;
 
  private:
   typedef uintptr_t Number;
@@ -398,16 +398,14 @@ const Value* AddressMap<Value>::FindInside(ValueSizeFunc size_func,
 }
 
 template <class Value>
-template <class Type>
-inline void AddressMap<Value>::Iterate(void (*callback)(Key, Value*, Type),
-                                       Type arg) const {
+void AddressMap<Value>::Iterate(tcmalloc::FunctionRef<void(Key, Value*)> body) const {
   // We could optimize this by traversing only non-empty clusters and/or blocks
   // but it does not speed up heap-checker noticeably.
   for (int h = 0; h < kHashSize; ++h) {
     for (const Cluster* c = hashtable_[h]; c != NULL; c = c->next) {
       for (int b = 0; b < kClusterBlocks; ++b) {
         for (Entry* e = c->blocks[b]; e != NULL; e = e->next) {
-          callback(e->key, &e->value, arg);
+          body(e->key, &e->value);
         }
       }
     }

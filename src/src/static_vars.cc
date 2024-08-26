@@ -35,7 +35,7 @@
 #include "static_vars.h"
 #include <stddef.h>                     // for NULL
 #include <new>                          // for operator new
-#ifdef HAVE_PTHREAD
+#ifndef _WIN32
 #include <pthread.h>                    // for pthread_atfork
 #endif
 #include "internal_logging.h"  // for CHECK_CONDITION
@@ -46,34 +46,14 @@
 
 namespace tcmalloc {
 
-#if defined(HAVE_FORK) && defined(HAVE_PTHREAD)
-// These following two functions are registered via pthread_atfork to make
-// sure the central_cache locks remain in a consisten state in the forked
-// version of the thread.
-
-void CentralCacheLockAll() NO_THREAD_SAFETY_ANALYSIS
-{
-  Static::pageheap_lock()->Lock();
-  for (int i = 0; i < Static::num_size_classes(); ++i)
-    Static::central_cache()[i].Lock();
-}
-
-void CentralCacheUnlockAll() NO_THREAD_SAFETY_ANALYSIS
-{
-  for (int i = 0; i < Static::num_size_classes(); ++i)
-    Static::central_cache()[i].Unlock();
-  Static::pageheap_lock()->Unlock();
-}
-#endif
-
 bool Static::inited_;
 SizeMap Static::sizemap_;
-CentralFreeListPadded Static::central_cache_[kClassSizesMax];
+CentralFreeList Static::central_cache_[kClassSizesMax];
 PageHeapAllocator<Span> Static::span_allocator_;
 PageHeapAllocator<StackTrace> Static::stacktrace_allocator_;
 Span Static::sampled_objects_;
 std::atomic<StackTrace*> Static::growth_stacks_;
-Static::PageHeapStorage Static::pageheap_;
+StaticStorage<PageHeap> Static::pageheap_;
 
 void Static::InitStaticVars() {
   sizemap_.Init();
@@ -81,13 +61,12 @@ void Static::InitStaticVars() {
   span_allocator_.New(); // Reduce cache conflicts
   span_allocator_.New(); // Reduce cache conflicts
   stacktrace_allocator_.Init();
-  // Do a bit of sanitizing: make sure central_cache is aligned properly
-  CHECK_CONDITION((sizeof(central_cache_[0]) % 64) == 0);
+
   for (int i = 0; i < num_size_classes(); ++i) {
     central_cache_[i].Init(i);
   }
 
-  new (&pageheap_.memory) PageHeap(sizemap_.min_span_size_in_pages());
+  new (pageheap()) PageHeap(sizemap_.min_span_size_in_pages());
 
 #if defined(ENABLE_AGGRESSIVE_DECOMMIT_BY_DEFAULT)
   const bool kDefaultAggressiveDecommit = true;
@@ -108,12 +87,35 @@ void Static::InitStaticVars() {
   DLL_Init(&sampled_objects_);
 }
 
+// These following two functions are registered via pthread_atfork to
+// make sure the central_cache locks remain in a consisten state in
+// the forked version of the thread. Also our OSX integration uses it
+// for mi_force_lock.
+
+void CentralCacheLockAll() NO_THREAD_SAFETY_ANALYSIS
+{
+  Static::pageheap_lock()->Lock();
+  for (int i = 0; i < Static::num_size_classes(); ++i)
+    Static::central_cache()[i].Lock();
+}
+
+void CentralCacheUnlockAll() NO_THREAD_SAFETY_ANALYSIS
+{
+  for (int i = 0; i < Static::num_size_classes(); ++i)
+    Static::central_cache()[i].Unlock();
+  Static::pageheap_lock()->Unlock();
+}
+
 void Static::InitLateMaybeRecursive() {
-#if defined(HAVE_FORK) && defined(HAVE_PTHREAD) \
-  && !defined(__APPLE__) && !defined(TCMALLOC_NO_ATFORK) \
-  && !defined(PTHREADS_CRASHES_IF_RUN_TOO_EARLY)
+#if !defined(__APPLE__) && !defined(_WIN32) && !defined(TCMALLOC_NO_ATFORK) \
+  && !defined(__FreeBSD__) && !defined(_AIX)
   // OSX has it's own way of handling atfork in malloc (see
   // libc_override_osx.h).
+  //
+  // Windows doesn't do fork.
+  //
+  // FreeBSD and AIX seemingly cannot handle early pthread_atfork
+  // calls. So we don't.
   //
   // For other OSes we do pthread_atfork even if standard seemingly
   // discourages pthread_atfork, asking apps to do only

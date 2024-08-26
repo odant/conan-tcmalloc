@@ -23,7 +23,10 @@
 /binary_trees.exe
 /binary_trees_shared
 /binary_trees_shared.exe
-/check_address_unittest
+/build/
+/check_address_test
+/cleanup_test
+/cleanup_test.exe
 /compile
 /config.guess
 /config.log
@@ -37,6 +40,10 @@
 /depcomp
 /frag_unittest
 /frag_unittest.exe
+/function_ref_test
+/function_ref_test.exe
+/generic_writer_test
+/generic_writer_test.exe
 /getpc_test
 /gperftools-*.tar.gz
 /gperftools-*.zip
@@ -71,6 +78,7 @@
 /malloc_bench_shared_full
 /malloc_bench_shared_full.exe
 /malloc_extension_c_test
+/malloc_extension_c_test.exe
 /malloc_extension_debug_test
 /malloc_extension_test
 /malloc_extension_test.exe
@@ -80,6 +88,8 @@
 /markidle_unittest.exe
 /memalign_debug_unittest
 /memalign_unittest
+/min_per_thread_cache_size_test
+/min_per_thread_cache_size_test.exe
 /missing
 /mmap_hook_test
 /packed_cache_test
@@ -89,6 +99,8 @@
 /pagemap_unittest
 /pagemap_unittest.exe
 /pprof-symbolize
+/proc_maps_iterator_test
+/proc_maps_iterator_test.exe
 /profile_handler_unittest
 /profiledata_unittest
 /profiler1_unittest
@@ -96,19 +108,17 @@
 /profiler3_unittest
 /profiler4_unittest
 /profiler_unittest.sh
-/raw_printer_test
 /realloc_debug_unittest
 /realloc_unittest
 /realloc_unittest.exe
 /safe_strerror_test
 /safe_strerror_test.exe
-/sampler_debug_test
 /sampler_test
+/sampler_test.exe
 /sampling_debug_test
 /sampling_debug_test.sh
 /sampling_test
 /sampling_test.sh
-/simple_compat_test
 /src/.deps
 /src/.dirstamp
 /src/base/.deps
@@ -151,3 +161,5 @@
 /unique_path_unittest.exe
 /unwind_bench
 /unwind_bench.exe
+/vendor/googletest/googletest/src/.deps
+/vendor/googletest/googletest/src/.dirstamp

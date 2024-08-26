@@ -664,7 +664,7 @@ void PatchMainExecutableLocked() {
 // the call to LoadLibraryExW, resulting in deadlock.  The solution is
 // to be very careful not to call *any* windows routines while holding
 // patch_all_modules_lock, inside PatchAllModules().
-static SpinLock patch_all_modules_lock(SpinLock::LINKER_INITIALIZED);
+static SpinLock patch_all_modules_lock;
 
 // last_loaded: The set of modules that were loaded the last time
 // PatchAllModules was called.  This is an optimization for only
@@ -936,9 +936,21 @@ LPVOID WINAPI WindowsInfo::Perftools_HeapAlloc(HANDLE hHeap, DWORD dwFlags,
 BOOL WINAPI WindowsInfo::Perftools_HeapFree(HANDLE hHeap, DWORD dwFlags,
                                             LPVOID lpMem) {
   MallocHook::InvokeDeleteHook(lpMem);
-  return ((BOOL (WINAPI *)(HANDLE, DWORD, LPVOID))
-          function_info_[kHeapFree].origstub_fn)(
-              hHeap, dwFlags, lpMem);
+
+  // We perform this check to work around a malloc/HeapFree mismatch
+  // in shell32.dll versions [10.0.22000.0, 10.0.22621.900)
+  // See issue #1490 for more context and oneapi-src/oneTBB #665
+  // for a full breakdown
+  bool owned_by_tcmalloc = MallocExtension::instance()->GetOwnership(lpMem) == MallocExtension::kOwned;
+
+  if (!owned_by_tcmalloc) {
+    return ((BOOL (WINAPI *)(HANDLE, DWORD, LPVOID))
+            function_info_[kHeapFree].origstub_fn)(
+                hHeap, dwFlags, lpMem);
+  } else {
+    do_free(lpMem);
+    return true;
+  }
 }
 
 HMODULE WINAPI WindowsInfo::Perftools_LoadLibraryExW(LPCWSTR lpFileName,

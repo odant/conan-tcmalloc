@@ -115,7 +115,7 @@ struct GetStackImplementation {
 
 // libunwind uses __thread so we check for both libunwind.h and
 // __thread support
-#if defined(USE_LIBUNWIND) && defined(HAVE_TLS)
+#if defined(USE_LIBUNWIND)
 #define STACKTRACE_INL_HEADER "stacktrace_libunwind-inl.h"
 #define GST_SUFFIX libunwind
 #include "stacktrace_impl_setup-inl.h"
@@ -198,6 +198,8 @@ struct GetStackImplementation {
 // --enable-frame-pointers is given. So we keep this behavior.
 #define PREFER_FP_UNWINDER 1
 #elif TCMALLOC_DONT_PREFER_LIBUNWIND && !defined(PREFER_LIBGCC_UNWINDER)
+#define PREFER_FP_UNWINDER 1
+#elif defined(__QNXNTO__) && !defined(PREFER_LIBGCC_UNWINDER)
 #define PREFER_FP_UNWINDER 1
 #else
 #define PREFER_FP_UNWINDER 0
@@ -288,32 +290,19 @@ static GetStackImplementation *get_stack_impl;
 
 static void init_default_stack_impl_inner(void);
 
-namespace tcmalloc {
-  bool EnterStacktraceScope(void);
-  void LeaveStacktraceScope(void);
-}
-
 namespace {
-using tcmalloc::EnterStacktraceScope;
-using tcmalloc::LeaveStacktraceScope;
 
-class StacktraceScope {
-  bool stacktrace_allowed;
-public:
-  StacktraceScope() {
-    stacktrace_allowed = true;
-    stacktrace_allowed = EnterStacktraceScope();
+struct CaptureScope {
+  void** const result;
+
+  CaptureScope(void** result) : result(result) {
+    init_default_stack_impl_inner();
   }
-  bool IsStacktraceAllowed() {
-    return stacktrace_allowed;
-  }
-  // NOTE: noinline here ensures that we don't tail-call GetStackXXX
-  // calls below. Which is crucial due to us having to pay attention
-  // to skip_count argument.
-  ATTRIBUTE_NOINLINE ~StacktraceScope() {
-    if (stacktrace_allowed) {
-      LeaveStacktraceScope();
-    }
+
+  ~CaptureScope() {
+    // This "work" that we're doing ensures we're not tail-calling
+    // stacktrace capturing implementation.
+    (void)*(const_cast<void* volatile *>(result));
   }
 };
 
@@ -322,11 +311,8 @@ public:
 ATTRIBUTE_NOINLINE
 PERFTOOLS_DLL_DECL int GetStackFrames(void** result, int* sizes, int max_depth,
                                       int skip_count) {
-  StacktraceScope scope;
-  if (!scope.IsStacktraceAllowed()) {
-    return 0;
-  }
-  init_default_stack_impl_inner();
+  CaptureScope scope(result);;
+
   return get_stack_impl->GetStackFramesPtr(result, sizes,
                                            max_depth, skip_count);
 }
@@ -334,11 +320,8 @@ PERFTOOLS_DLL_DECL int GetStackFrames(void** result, int* sizes, int max_depth,
 ATTRIBUTE_NOINLINE
 PERFTOOLS_DLL_DECL int GetStackFramesWithContext(void** result, int* sizes, int max_depth,
                                                  int skip_count, const void *uc) {
-  StacktraceScope scope;
-  if (!scope.IsStacktraceAllowed()) {
-    return 0;
-  }
-  init_default_stack_impl_inner();
+  CaptureScope scope(result);
+
   return get_stack_impl->GetStackFramesWithContextPtr(result, sizes, max_depth,
                                                       skip_count, uc);
 }
@@ -346,22 +329,16 @@ PERFTOOLS_DLL_DECL int GetStackFramesWithContext(void** result, int* sizes, int 
 ATTRIBUTE_NOINLINE
 PERFTOOLS_DLL_DECL int GetStackTrace(void** result, int max_depth,
                                      int skip_count) {
-  StacktraceScope scope;
-  if (!scope.IsStacktraceAllowed()) {
-    return 0;
-  }
-  init_default_stack_impl_inner();
+  CaptureScope scope(result);
+
   return get_stack_impl->GetStackTracePtr(result, max_depth, skip_count);
 }
 
 ATTRIBUTE_NOINLINE
 PERFTOOLS_DLL_DECL int GetStackTraceWithContext(void** result, int max_depth,
                                                 int skip_count, const void *uc) {
-  StacktraceScope scope;
-  if (!scope.IsStacktraceAllowed()) {
-    return 0;
-  }
-  init_default_stack_impl_inner();
+  CaptureScope scope(result);
+
   return get_stack_impl->GetStackTraceWithContextPtr(result, max_depth,
                                                      skip_count, uc);
 }
@@ -397,6 +374,23 @@ const char* TEST_bump_stacktrace_implementation(const char* suggestion) {
       // skip null implementation
       continue;
     }
+#ifdef HAVE_GST_arm
+    if (get_stack_impl == &impl__arm) {
+      // "arm" backtracer is hopelessly broken. So don't test. We
+      // still ship it, though, just in case.
+      continue;
+    }
+#endif  // HAVE_GST_arm
+#if defined(HAVE_GST_generic_fp) && (!__x86_64__ && !__i386__ && !__aarch64__ && !__riscv)
+    // Those "major" architectures have functional frame pointer
+    // backtracer and they're built with -fno-omit-frame-pointers
+    // -mno-omit-leaf-frame-pointer. So we do expect those tests to
+    // succeed. Everyone else (e.g. 32-bit legacy arm) is unlikely to
+    // pass.
+    if (get_stack_impl == &impl__generic_fp || get_stack_impl == &impl__generic_fp_unsafe) {
+      continue;
+    }
+#endif  // generic_fp && !"good architecture"
     break;
   } while (true);
 

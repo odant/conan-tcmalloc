@@ -37,13 +37,11 @@
 
 #include <config.h>
 
-#ifdef HAVE_PTHREAD
-#include <pthread.h>
-#endif
 #include <stddef.h>
 #include <set>
 #include "base/stl_allocator.h"
 #include "base/spinlock.h"
+#include "base/threading.h"
 #include "base/thread_annotations.h"
 #include "base/low_level_alloc.h"
 #include "heap-profile-stats.h"
@@ -227,9 +225,8 @@ class MemoryRegionMap {
 
   // Iterate over the buckets which store mmap and munmap counts per stack
   // trace.  It calls "callback" for each bucket, and passes "arg" to it.
-  template<class Type>
-  static void IterateBuckets(void (*callback)(const HeapProfileBucket*, Type),
-                             Type arg) EXCLUSIVE_LOCKS_REQUIRED(lock_);
+  template<class Body>
+  static void IterateBuckets(Body body) EXCLUSIVE_LOCKS_REQUIRED(lock_);
 
   // Get the bucket whose caller stack trace is "key".  The stack trace is
   // used to a depth of "depth" at most.  The requested bucket is created if
@@ -260,6 +257,11 @@ class MemoryRegionMap {
   typedef std::set<Region, RegionCmp,
               STL_Allocator<Region, MyAllocator> > RegionSet;
 
+  // The bytes where MemoryRegionMap::regions_ will point to.  We use
+  // StaticStorage with noop c-tor so that global construction does
+  // not interfere.
+  static inline tcmalloc::StaticStorage<RegionSet> regions_rep_;
+
  public:  // more in-depth interface ==========================================
 
   // STL iterator with values of Region
@@ -276,13 +278,8 @@ class MemoryRegionMap {
   static RegionIterator EndRegionLocked();
 
   // Return the accumulated sizes of mapped and unmapped regions.
-  static int64 MapSize() { return map_size_; }
-  static int64 UnmapSize() { return unmap_size_; }
-
-  // Effectively private type from our .cc =================================
-  // public to let us declare global objects:
-  union RegionSetRep;
-
+  static int64_t MapSize() { return map_size_; }
+  static int64_t UnmapSize() { return unmap_size_; }
  private:
   // representation ===========================================================
 
@@ -311,12 +308,12 @@ class MemoryRegionMap {
   // Recursion count for the recursive lock.
   static int recursion_count_;
   // The thread id of the thread that's inside the recursive lock.
-  static pthread_t lock_owner_tid_;
+  static uintptr_t lock_owner_tid_;
 
   // Total size of all mapped pages so far
-  static int64 map_size_;
+  static int64_t map_size_;
   // Total size of all unmapped pages so far
-  static int64 unmap_size_;
+  static int64_t unmap_size_;
 
   // Bucket hash table which is described in heap-profile-stats.h.
   static HeapProfileBucket** bucket_table_ GUARDED_BY(lock_);
@@ -371,10 +368,12 @@ class MemoryRegionMap {
 
   // Record addition of a memory region at address "start" of size "size"
   // (called from our mmap/mremap/sbrk hook).
-  static void RecordRegionAddition(const void* start, size_t size);
+  static void RecordRegionAddition(const void* start, size_t size, int stack_depth, void** stack);
   // Record deletion of a memory region at address "start" of size "size"
   // (called from our munmap/mremap/sbrk hook).
   static void RecordRegionRemoval(const void* start, size_t size);
+
+  static int NeedBacktrace(const tcmalloc::MappingEvent& evt);
 
   // Record deletion of a memory region of size "size" in a bucket whose
   // caller stack trace is "key".  The stack trace is used to a depth of
@@ -392,14 +391,13 @@ class MemoryRegionMap {
   DISALLOW_COPY_AND_ASSIGN(MemoryRegionMap);
 };
 
-template <class Type>
-void MemoryRegionMap::IterateBuckets(
-    void (*callback)(const HeapProfileBucket*, Type), Type callback_arg) {
+template <class Body>
+void MemoryRegionMap::IterateBuckets(Body body) {
   for (int index = 0; index < kHashTableSize; index++) {
     for (HeapProfileBucket* bucket = bucket_table_[index];
          bucket != NULL;
          bucket = bucket->next) {
-      callback(bucket, callback_arg);
+      body(bucket);
     }
   }
 }

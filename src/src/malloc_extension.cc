@@ -32,70 +32,37 @@
 // Author: Sanjay Ghemawat <opensource@google.com>
 
 #include <config.h>
+
+#include "gperftools/malloc_extension.h"
+#include "gperftools/malloc_extension_c.h"
+
 #include <assert.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <string>
+
+#include <algorithm>
+#include <atomic>
+
 #include "base/dynamic_annotations.h"
-#include "base/sysinfo.h"    // for FillProcSelfMaps
+#include "base/googleinit.h"
+#include "base/proc_maps_iterator.h"
+#include "tcmalloc_internal.h"
+
+#include "gperftools/tcmalloc.h"
+
 #ifndef NO_HEAP_CHECK
 #include "gperftools/heap-checker.h"
 #endif
-#include "gperftools/malloc_extension.h"
-#include "gperftools/malloc_extension_c.h"
-#include "base/googleinit.h"
 
-using std::string;
-using std::vector;
-
-static void DumpAddressMap(string* result) {
-  *result += "\nMAPPED_LIBRARIES:\n";
-  // We keep doubling until we get a fit
-  const size_t old_resultlen = result->size();
-  for (int amap_size = 10240; amap_size < 10000000; amap_size *= 2) {
-    result->resize(old_resultlen + amap_size);
-    bool wrote_all = false;
-    const int bytes_written =
-        tcmalloc::FillProcSelfMaps(&((*result)[old_resultlen]), amap_size,
-                                   &wrote_all);
-    if (wrote_all) {   // we fit!
-      (*result)[old_resultlen + bytes_written] = '\0';
-      result->resize(old_resultlen + bytes_written);
-      return;
-    }
-  }
-  result->reserve(old_resultlen);   // just don't print anything
+static void DumpAddressMap(std::string* result) {
+  tcmalloc::StringGenericWriter writer(result);
+  writer.AppendStr("\nMAPPED_LIBRARIES:\n");
+  tcmalloc::SaveProcSelfMaps(&writer);
 }
 
-// Note: this routine is meant to be called before threads are spawned.
-void MallocExtension::Initialize() {
-  static bool initialize_called = false;
-
-  if (initialize_called) return;
-  initialize_called = true;
-
-#ifdef __GLIBC__
-  // GNU libc++ versions 3.3 and 3.4 obey the environment variables
-  // GLIBCPP_FORCE_NEW and GLIBCXX_FORCE_NEW respectively.  Setting
-  // one of these variables forces the STL default allocator to call
-  // new() or delete() for each allocation or deletion.  Otherwise
-  // the STL allocator tries to avoid the high cost of doing
-  // allocations by pooling memory internally.  However, tcmalloc
-  // does allocations really fast, especially for the types of small
-  // items one sees in STL, so it's better off just using us.
-  // TODO: control whether we do this via an environment variable?
-  setenv("GLIBCPP_FORCE_NEW", "1", false /* no overwrite*/);
-  setenv("GLIBCXX_FORCE_NEW", "1", false /* no overwrite*/);
-
-  // Now we need to make the setenv 'stick', which it may not do since
-  // the env is flakey before main() is called.  But luckily stl only
-  // looks at this env var the first time it tries to do an alloc, and
-  // caches what it finds.  So we just cause an stl alloc here.
-  string dummy("I need to be allocated");
-  dummy += "!";         // so the definition of dummy isn't optimized out
-#endif  /* __GLIBC__ */
-}
+void MallocExtension::Initialize() {}
 
 // SysAllocator implementation
 SysAllocator::~SysAllocator() {}
@@ -182,7 +149,7 @@ MallocExtension::Ownership MallocExtension::GetOwnership(const void* p) {
 }
 
 void MallocExtension::GetFreeListSizes(
-    vector<MallocExtension::FreeListInfo>* v) {
+  std::vector<MallocExtension::FreeListInfo>* v) {
   v->clear();
 }
 
@@ -196,40 +163,27 @@ void MallocExtension::MarkThreadTemporarilyIdle() {
 
 // The current malloc extension object.
 
-static MallocExtension* current_instance;
-
-static union {
-  char chars[sizeof(MallocExtension)];
-  void *ptr;
-} mallocextension_implementation_space;
-
-static void InitModule() {
-  if (current_instance != NULL) {
-    return;
-  }
-  current_instance = new (mallocextension_implementation_space.chars) MallocExtension();
-#ifndef NO_HEAP_CHECK
-  HeapLeakChecker::IgnoreObject(current_instance);
-#endif
-}
-
-REGISTER_MODULE_INITIALIZER(malloc_extension_init, InitModule())
+static std::atomic<MallocExtension*> current_instance;
 
 MallocExtension* MallocExtension::instance() {
-  InitModule();
-  return current_instance;
+  MallocExtension* inst = current_instance.load(std::memory_order_relaxed);
+  if (PREDICT_TRUE(inst != nullptr)) {
+    return inst;
+  }
+
+  // if MallocExtension isn't set up yet, it could be we're called
+  // super-early. Trigger tcmalloc initialization and assume it will
+  // set up instance().
+  tc_free(tc_malloc(32));
+  return instance();
 }
 
 void MallocExtension::Register(MallocExtension* implementation) {
-  InitModule();
-  // When running under valgrind, our custom malloc is replaced with
-  // valgrind's one and malloc extensions will not work.  (Note:
-  // callers should be responsible for checking that they are the
-  // malloc that is really being run, before calling Register.  This
-  // is just here as an extra sanity check.)
-  if (!RunningOnValgrind()) {
-    current_instance = implementation;
-  }
+  current_instance.store(implementation);
+
+#ifndef NO_HEAP_CHECK
+  HeapLeakChecker::IgnoreObject(implementation);
+#endif
 }
 
 // -----------------------------------------------------------------------
@@ -257,10 +211,10 @@ void PrintCountAndSize(MallocExtensionWriter* writer,
   char buf[100];
   snprintf(buf, sizeof(buf),
            "%6" PRIu64 ": %8" PRIu64 " [%6" PRIu64 ": %8" PRIu64 "] @",
-           static_cast<uint64>(count),
-           static_cast<uint64>(size),
-           static_cast<uint64>(count),
-           static_cast<uint64>(size));
+           static_cast<uint64_t>(count),
+           static_cast<uint64_t>(size),
+           static_cast<uint64_t>(count),
+           static_cast<uint64_t>(size));
   writer->append(buf, strlen(buf));
 }
 

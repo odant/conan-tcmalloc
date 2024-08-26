@@ -91,12 +91,7 @@ class PERFTOOLS_DLL_DECL MallocExtension {
  public:
   virtual ~MallocExtension();
 
-  // Call this very early in the program execution -- say, in a global
-  // constructor -- to set up parameters and state needed by all
-  // instrumented malloc implemenatations.  One example: this routine
-  // sets environemnt variables to tell STL to use libc's malloc()
-  // instead of doing its own memory management.  This is safe to call
-  // multiple times, as long as each time is before threads start up.
+  // DEPRECATED. No-op.
   static void Initialize();
 
   // See "verify_memory.h" to see what these routines do
@@ -180,7 +175,14 @@ class PERFTOOLS_DLL_DECL MallocExtension {
   // --------
   // "tcmalloc.max_total_thread_cache_bytes"
   //      Upper limit on total number of bytes stored across all
-  //      per-thread caches.  Default: 16MB.
+  //      per-thread caches.  Default: 32MB.
+  //
+  // "tcmalloc.min_per_thread_cache_bytes"
+  //      Lower limit on total number of bytes stored per-thread cache.
+  //      Default: 512kB.
+  //      Note that this property only shows effect if per-thread cache
+  //      calculated using tcmalloc.max_total_thread_cache_bytes ended up being
+  //      less than tcmalloc.min_per_thread_cache_bytes.
   //
   // "tcmalloc.current_total_thread_cache_bytes"
   //      Number of bytes used across all thread caches.
@@ -340,8 +342,7 @@ class PERFTOOLS_DLL_DECL MallocExtension {
   // The current malloc implementation.  Always non-NULL.
   static MallocExtension* instance();
 
-  // Change the malloc implementation.  Typically called by the
-  // malloc implementation during initialization.
+  // DEPRECATED. Internal.
   static void Register(MallocExtension* implementation);
 
   // Returns detailed information about malloc's freelists. For each list,

@@ -198,18 +198,7 @@ AC_PROG_CXX
 AC_LANG([C++])
 AM_CONDITIONAL(GCC, test "$GCC" = yes)   # let the Makefile know if we're gcc
 
-AX_CXX_COMPILE_STDCXX(11, ext, mandatory)
-
-# Check if we have an objcopy installed that supports -W
-AC_CHECK_TOOL([OBJCOPY], [objcopy], [])
-AS_IF([test -n "$OBJCOPY"], [dnl
-  AC_CACHE_CHECK([if $OBJCOPY supports -W], gpt_cv_objcopy_weaken, [dnl
-    AC_LINK_IFELSE([AC_LANG_PROGRAM([void foo() {}])], [dnl
-      AS_IF(["$OBJCOPY" -W foo conftest$ac_exeext /dev/null],
-      	    [gpt_cv_objcopy_weaken=yes], [gpt_cv_objcopy_weaken=no])],
-    [gpt_cv_objcopy_weaken=no])])],
-  [gpt_cv_objcopy_weaken=no])
-AM_CONDITIONAL(HAVE_OBJCOPY_WEAKEN, test $gpt_cv_objcopy_weaken = yes)
+AX_CXX_COMPILE_STDCXX(17, ext, mandatory)
 
 LT_INIT
 
@@ -234,6 +223,19 @@ AC_CACHE_CHECK(
    CXXFLAGS="$OLD_CXXFLAGS"])
 AM_CONDITIONAL(ENABLE_FP_FLAGS, [test "x$ac_cv_frame_pointer_cflags" = "xyes"])
 
+# Clang-only (so far?) -Wthread-safety is a useful thing. We want.
+AC_CACHE_CHECK(
+  [compiler and target supports -Wthread-safety],
+  [ac_cv_w_thread_safety],
+  [OLD_CXXFLAGS="$CXXFLAGS"
+   CXXFLAGS="$CXXFLAGS -Wthread-safety"
+   AC_COMPILE_IFELSE(
+     [AC_LANG_PROGRAM([], [])],
+     [ac_cv_w_thread_safety=yes],
+     [ac_cv_w_thread_safety=no])
+   CXXFLAGS="$OLD_CXXFLAGS"])
+AM_CONDITIONAL(ENABLE_W_THREAD_SAFETY, [test "x$ac_cv_w_thread_safety" = "xyes"])
+
 AX_C___ATTRIBUTE__
 
 AC_MSG_CHECKING(for __attribute__((aligned(N))) on functions)
@@ -251,11 +253,8 @@ AC_MSG_RESULT($ac_cv___attribute__aligned_fn)
 # TODO(csilvers): we could remove a lot when WITH_CPU_PROFILER etc is "no".
 AC_CHECK_TYPES([struct mallinfo],,, [#include <malloc.h>])
 AC_CHECK_TYPES([struct mallinfo2],,, [#include <malloc.h>])
-AC_CHECK_TYPES([Elf32_Versym],,, [#include <elf.h>])   # for vdso_support.h
 AC_CHECK_FUNCS(sbrk)            # for tcmalloc to get memory
-AC_CHECK_FUNCS(__sbrk)          # for tcmalloc to get memory
 AC_CHECK_FUNCS(geteuid)         # for turning off services when run as root
-AC_CHECK_FUNCS(fork)            # for the pthread_atfork setup
 AC_CHECK_HEADERS(features.h)    # for vdso_support.h, __GLIBC__ macros
 AC_CHECK_HEADERS(malloc.h)      # some systems define stuff there, others not
 AC_CHECK_HEADERS(glob.h)        # for heap-profile-table (cleaning up profiles)
@@ -267,9 +266,6 @@ AC_CHECK_HEADERS(sys/socket.h)  # optional; for forking out to symbolizer
 AC_CHECK_HEADERS(sys/wait.h)    # optional; for forking out to symbolizer
 AC_CHECK_HEADERS(poll.h)        # optional; for forking out to symbolizer
 AC_CHECK_HEADERS(fcntl.h)       # for tcmalloc_unittest
-AC_CHECK_HEADERS(grp.h)         # for heapchecker_unittest
-AC_CHECK_HEADERS(pwd.h)         # for heapchecker_unittest
-AC_CHECK_HEADERS(sys/resource.h)         # for memalign_unittest.cc
 AC_CHECK_HEADERS(sys/cdefs.h)   # Where glibc defines __THROW
 
 AC_CHECK_HEADERS(sys/ucontext.h)
@@ -319,10 +315,13 @@ esac
 # we're dealing with unknown system, we have to check if GetPC
 # actually works. But don't bother if we're not doing cpu-profiling.
 if test "$enable_cpu_profiler" = yes; then
-  AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[#include "src/getpc.h"]], [GetPC({})])],
+  OLD_CXXFLAGS="$CXXFLAGS"
+  CXXFLAGS="$CXXFLAGS -I$srcdir/src"
+  AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[#include "getpc.h"]], [GetPC({})])],
                     [],
                     [AC_MSG_WARN(Could not find the PC.  Will not try to compile libprofiler...)
                      enable_cpu_profiler=no])
+  CXXFLAGS="$OLD_CXXFLAGS"
 fi
 
 # Some tests test the behavior of .so files, and only make sense for dynamic.
@@ -344,30 +343,6 @@ AC_ARG_ENABLE(frame_pointers,
                              [Add -fno-omit-frame-pointer to compile flags]),
 	      , enable_frame_pointers=no)
 AM_CONDITIONAL(ENABLE_FRAME_POINTERS, test "$enable_frame_pointers" = yes)
-
-# See if the compiler supports -Wno-unused-result.
-# Newer ubuntu's turn on -D_FORTIFY_SOURCE=2, enabling
-# __attribute__((warn_unused_result)) for things like write(),
-# which we don't care about.
-AC_CACHE_CHECK([if the compiler supports -Wno-unused-result],
-               perftools_cv_w_no_unused_result,
-	       [OLD_CXXFLAGS="$CXXFLAGS"
-	        CXXFLAGS="$CXXFLAGS -Wno-error -Wunused-result"
-		# gcc doesn't warn about unknown flags unless it's
-		# also warning for some other purpose, hence the
-		# divide-by-0.  (We use -Wno-error to make sure the
-		# divide-by-0 doesn't cause this test to fail!)
-                #
-                # Also gcc is giving only warning for unknown flags of
-                # -Wno-XXX form. So in order to detect support we're
-                # using -Wunused-result which will cause gcc to give
-                # error which we can detect.
-	        AC_COMPILE_IFELSE([AC_LANG_PROGRAM(, return 1/0)],
-	                          perftools_cv_w_no_unused_result=yes,
-                                  perftools_cv_w_no_unused_result=no)
-	        CXXFLAGS="$OLD_CXXFLAGS"])
-AM_CONDITIONAL(HAVE_W_NO_UNUSED_RESULT,
-	       test "$perftools_cv_w_no_unused_result" = yes)
 
 AC_ARG_ENABLE([deprecated-pprof],
               [AS_HELP_STRING([--disable-deprecated-pprof],
@@ -416,39 +391,6 @@ AC_CACHE_CHECK([if C++ compiler supports -fsized-deallocation],
 AM_CONDITIONAL(HAVE_SIZED_DEALLOCATION,
                test "$perftools_cv_sized_deallocation_result" = yes)
 
-AC_CACHE_CHECK([if C++ compiler supports std::align_val_t without options],
-               [perftools_cv_have_align_val_t],
-               [AC_LINK_IFELSE([AC_LANG_PROGRAM(
-                    [[#include <new>]],
-                    [[(::operator delete)((::operator new)(256, std::align_val_t(16)), std::align_val_t(16))]])],
-                 perftools_cv_have_align_val_t=yes,
-                 perftools_cv_have_align_val_t=no)])
-
-AC_CACHE_CHECK([if C++ compiler supports -faligned-new],
-               [perftools_cv_have_f_aligned_new],
-               [OLD_CXXFLAGS="$CXXFLAGS"
-                CXXFLAGS="$CXXFLAGS -faligned-new"
-                AC_LINK_IFELSE([AC_LANG_PROGRAM(
-                    [[#include <new>]],
-                    [[(::operator delete)((::operator new)(256, std::align_val_t(16)), std::align_val_t(16))]])],
-                 perftools_cv_have_f_aligned_new=yes,
-                 perftools_cv_have_f_aligned_new=no)
-                CXXFLAGS="$OLD_CXXFLAGS"])
-
-AM_CONDITIONAL(HAVE_F_ALIGNED_NEW,
-               test "$perftools_cv_have_f_aligned_new" = yes)
-
-AS_IF([test "$perftools_cv_have_align_val_t" = yes || test "$perftools_cv_have_f_aligned_new" = yes],
-        [AC_DEFINE([ENABLE_ALIGNED_NEW_DELETE], 1, [Build new/delete operators for overaligned types])
-         AC_MSG_NOTICE([Will build new/delete operators for overaligned types])],
-         AC_MSG_NOTICE([Will not build new/delete operators for overaligned types]))
-
-if test "$perftools_cv_have_align_val_t" = yes || test "$perftools_cv_have_f_aligned_new" = yes; then
-  AC_SUBST(ac_cv_have_std_align_val_t, 1)   # gperftools/tcmalloc.h and windows/gperftools/tcmalloc.h need this
-else
-  AC_SUBST(ac_cv_have_std_align_val_t, 0)
-fi
-
 AC_CACHE_CHECK([if target has _Unwind_Backtrace],
                [perftools_cv_have_unwind_backtrace],
                [AC_COMPILE_IFELSE([AC_LANG_PROGRAM(
@@ -492,35 +434,6 @@ AC_LINK_IFELSE([AC_LANG_PROGRAM([#include <unistd.h>],
                 AC_MSG_RESULT([yes])],
                [AC_MSG_RESULT([no])])
 
-# If we support __thread, that can speed up tcmalloc a bit.
-# Note, however, that our code tickles a bug in gcc < 4.1.2
-# involving TLS and -fPIC (which our libraries will use) on x86:
-#   http://gcc.gnu.org/ml/gcc-bugs/2006-09/msg02275.html
-#
-# And mingw also does compile __thread but resultant code actually
-# fails to work correctly at least in some not so ancient version:
-# http://mingw-users.1079350.n2.nabble.com/gcc-4-4-multi-threaded-exception-handling-amp-thread-specifier-not-working-td3440749.html
-#
-# Also it was reported that earlier gcc versions for mips compile
-# __thread but it doesn't really work
-AC_MSG_CHECKING([for __thread])
-AC_LINK_IFELSE([AC_LANG_PROGRAM([#if defined(__GNUC__) && ((__GNUC__ < 4) || (__GNUC__ == 4 && __GNUC_MINOR__ < 1) || (__GNUC__ == 4 && __GNUC_MINOR__ == 1 && __GNUC_PATCHLEVEL__ < 2))
-#error gcc has this bug: http://gcc.gnu.org/ml/gcc-bugs/2006-09/msg02275.html
-#elif defined(__MINGW32__)
-#error mingw doesnt really support tls
-#elif defined(__APPLE__)
-#error OSX __thread support is known to call malloc which makes it unsafe to use from malloc replacement
-#elif defined(_AIX)
-#error AIX thread support is known to call malloc which makes it unsafe to use from malloc replacement
-#elif defined(__QNXNTO__)
-#error QNX thread support is known to call malloc which makes it unsafe to use from malloc replacement
-#endif
-], [static __thread int p = 0])],
-               [AC_DEFINE(HAVE_TLS, 1,
-                          Define to 1 if compiler supports __thread)
-                AC_MSG_RESULT([yes])],
-               [AC_MSG_RESULT([no])])
-
 # Nanosleep requires extra libraries on some architectures (solaris).
 # This sets NANOSLEEP_LIBS.  nanosleep doesn't exist on mingw, which
 # is fine for us because we don't compile libspinlock, which uses it.
@@ -529,23 +442,11 @@ if test "$need_nanosleep" = yes; then
   AC_SUBST(NANOSLEEP_LIBS)
 fi
 
-# Solaris 10 6/06 has a bug where /usr/sfw/lib/libstdc++.la is empty.
-# If so, we replace it with our own version.
-LIBSTDCXX_LA_LINKER_FLAG=
-if test -f /usr/sfw/lib/libstdc++.la && ! test -s /usr/sfw/lib/libstdc++.la
-then
-  LIBSTDCXX_LA_LINKER_FLAG='-L$(top_srcdir)/src/solaris'
-fi
-AC_SUBST(LIBSTDCXX_LA_LINKER_FLAG)
-
 # In fact, a lot of the code in this directory depends on pthreads
 AX_PTHREAD
 
 # Figure out where libc has program_invocation_name
 AC_PROGRAM_INVOCATION_NAME
-
-# Make the install prefix available, to figure out where to look for pprof
-AC_INSTALL_PREFIX
 
 dnl only very recent mingw has sleep and nanosleep
 case "$host" in
@@ -576,34 +477,26 @@ AS_IF([test "x$ac_cv_header_execinfo_h" = xyes],
      LIBS=$save_LIBS]))
 AC_SUBST(STACKTRACE_UNITTEST_LIBS)
 
-# For windows, this has a non-trivial value (__declspec(export)), but any
-# system that uses configure wants this to be the empty string.
-AC_DEFINE(PERFTOOLS_DLL_DECL,,
-          [Always the empty-string on non-windows systems.
-           On windows, should be "__declspec(dllexport)".
-	   This way, when we compile the dll, we export our functions/classes.
-	   It's safe to define this here because config.h is only used
-	   internally, to compile the DLL, and every DLL source file
-	   #includes "config.h" before anything else.])
+AC_ARG_ENABLE([hidden-visibility],
+              [AS_HELP_STRING([--enable-hidden-visibility],
+                              [build libraries with -fvisibility=hidden])],
+              [enable_visibility=yes],
+              [enable_visibility=no])
 
-# In theory, config.h files shouldn't need a header guard, but we do,
-# because we (maybe) #include windows/mingw.h from within config.h,
-# and it #includes other .h files.  These all have header guards, so
-# the end result is if config.h is #included twice, its #undefs get
-# evaluated twice, but all the ones in mingw.h/etc only get evaluated
-# once, potentially causing trouble.  c.f.
+AC_DEFINE([PERFTOOLS_DLL_DECL], [], [dllexport or attribute visibility])
+
+AS_IF([test "x$enable_visibility" = xyes],
+  [AC_DEFINE([PERFTOOLS_DLL_DECL], [__attribute((visibility("default")))], [])
+   CXXFLAGS="-fvisibility=hidden $CXXFLAGS"])
+
+# In theory, config.h files shouldn't need a header guard.
+# Now there were historical reasons for doing so
 #   https://github.com/gperftools/gperftools/issues/248
+# but these days we are keeping it mostly for consistency and safety.
 AH_TOP([
 #ifndef GPERFTOOLS_CONFIG_H_
 #define GPERFTOOLS_CONFIG_H_
 ])
-
-AH_VERBATIM([PTHREADS_CRASHES_IF_RUN_TOO_EARLY],
-	    [/* Mark the systems where we know it's bad if pthreads runs too
-   early before main (before threads are initialized, presumably).  */
-#if defined(__FreeBSD__) || defined(_AIX)
-#define PTHREADS_CRASHES_IF_RUN_TOO_EARLY 1
-#endif])
 
 # MinGW uses autoconf, but also needs the windows shim routines
 # (since it doesn't have its own support for, say, pthreads).
@@ -613,8 +506,9 @@ AH_VERBATIM([PTHREADS_CRASHES_IF_RUN_TOO_EARLY],
 # Also, manually mark systems where we have to be careful how early
 # we run pthreads.  TODO(csilvers): turn this into an autoconf check.
 AH_BOTTOM([
-#ifdef __MINGW32__
-#include "windows/mingw.h"
+#ifdef WIN32
+// TODO(csilvers): include windows/port.h in every relevant source file instead?
+#include "windows/port.h"
 #endif
 
 #endif  /* #ifndef GPERFTOOLS_CONFIG_H_ */
@@ -671,6 +565,9 @@ AS_IF([test "x$enable_aggressive_decommit_by_default" = xyes],
                  [enable aggressive decommit by default])])
 
 # Write generated configuration file
+# NOTE: vsprojects/gperftools/tcmalloc.h is checked in
 AC_CONFIG_FILES([Makefile
-                 src/gperftools/tcmalloc.h src/windows/gperftools/tcmalloc.h])
+                 src/gperftools/tcmalloc.h
+                 vsprojects/include/gperftools/tcmalloc.h:src/gperftools/tcmalloc.h.in
+                 ])
 AC_OUTPUT

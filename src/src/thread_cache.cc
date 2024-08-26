@@ -32,14 +32,20 @@
 // Author: Ken Ashcraft <opensource@google.com>
 
 #include <config.h>
+
 #include "thread_cache.h"
+
+#include <algorithm>                    // for max, min
+
 #include <errno.h>
 #include <string.h>                     // for memcpy
-#include <algorithm>                    // for max, min
+
 #include "base/commandlineflags.h"      // for SpinLockHolder
 #include "base/spinlock.h"              // for SpinLockHolder
+#include "central_freelist.h"
 #include "getenv_safe.h"                // for TCMallocGetenvSafe
-#include "central_freelist.h"           // for CentralFreeListPadded
+#include "tcmalloc_internal.h"
+#include "thread_cache_ptr.h"
 
 using std::min;
 using std::max;
@@ -61,20 +67,18 @@ namespace tcmalloc {
 static bool phinited = false;
 
 volatile size_t ThreadCache::per_thread_cache_size_ = kMaxThreadCacheSize;
+
+std::atomic<size_t> ThreadCache::min_per_thread_cache_size_ = kMinThreadCacheSize;
 size_t ThreadCache::overall_thread_cache_size_ = kDefaultOverallThreadCacheSize;
 ssize_t ThreadCache::unclaimed_cache_space_ = kDefaultOverallThreadCacheSize;
 PageHeapAllocator<ThreadCache> threadcache_allocator;
 ThreadCache* ThreadCache::thread_heaps_ = NULL;
 int ThreadCache::thread_heap_count_ = 0;
 ThreadCache* ThreadCache::next_memory_steal_ = NULL;
-#ifdef HAVE_TLS
-__thread ThreadCache::ThreadLocalData ThreadCache::threadlocal_data_
-    ATTR_INITIAL_EXEC CACHELINE_ALIGNED;
-#endif
-bool ThreadCache::tsd_inited_ = false;
-pthread_key_t ThreadCache::heap_key_;
 
-void ThreadCache::Init(pthread_t tid) {
+ThreadCache::ThreadCache() {
+  ASSERT(Static::pageheap_lock()->IsHeld());
+
   size_ = 0;
 
   max_size_ = 0;
@@ -82,29 +86,30 @@ void ThreadCache::Init(pthread_t tid) {
   if (max_size_ == 0) {
     // There isn't enough memory to go around.  Just give the minimum to
     // this thread.
-    SetMaxSize(kMinThreadCacheSize);
+    size_t min_size = min_per_thread_cache_size_.load(std::memory_order_relaxed);
+    SetMaxSize(min_size);
 
     // Take unclaimed_cache_space_ negative.
-    unclaimed_cache_space_ -= kMinThreadCacheSize;
+    unclaimed_cache_space_ -= min_size;
     ASSERT(unclaimed_cache_space_ < 0);
   }
 
-  next_ = NULL;
-  prev_ = NULL;
-  tid_  = tid;
-  in_setspecific_ = false;
-  for (uint32 cl = 0; cl < Static::num_size_classes(); ++cl) {
+  next_ = nullptr;
+  prev_ = nullptr;
+  for (uint32_t cl = 0; cl < Static::num_size_classes(); ++cl) {
     list_[cl].Init(Static::sizemap()->class_to_size(cl));
   }
 
-  uint32_t sampler_seed;
-  memcpy(&sampler_seed, &tid, sizeof(sampler_seed));
-  sampler_.Init(uint64_t{sampler_seed} ^ reinterpret_cast<uintptr_t>(&sampler_seed));
+  uintptr_t sampler_seed;
+  uintptr_t addr = reinterpret_cast<uintptr_t>(&sampler_seed);
+  sampler_seed = addr;
+
+  sampler_.Init(uint64_t{sampler_seed});
 }
 
-void ThreadCache::Cleanup() {
+ThreadCache::~ThreadCache() {
   // Put unused memory back into central cache
-  for (uint32 cl = 0; cl < Static::num_size_classes(); ++cl) {
+  for (uint32_t cl = 0; cl < Static::num_size_classes(); ++cl) {
     if (list_[cl].length() > 0) {
       ReleaseToCentralCache(&list_[cl], cl, list_[cl].length());
     }
@@ -113,7 +118,7 @@ void ThreadCache::Cleanup() {
 
 // Remove some objects of class "cl" from central cache and add to thread heap.
 // On success, return the first object for immediate use; otherwise return NULL.
-void* ThreadCache::FetchFromCentralCache(uint32 cl, int32_t byte_size,
+void* ThreadCache::FetchFromCentralCache(uint32_t cl, int32_t byte_size,
                                          void *(*oom_handler)(size_t size)) {
   FreeList* list = &list_[cl];
   ASSERT(list->empty());
@@ -156,7 +161,7 @@ void* ThreadCache::FetchFromCentralCache(uint32 cl, int32_t byte_size,
   return start;
 }
 
-void ThreadCache::ListTooLong(FreeList* list, uint32 cl) {
+void ThreadCache::ListTooLong(FreeList* list, uint32_t cl) {
   size_ += list->object_size();
 
   const int batch_size = Static::sizemap()->num_objects_to_move(cl);
@@ -187,7 +192,7 @@ void ThreadCache::ListTooLong(FreeList* list, uint32 cl) {
 }
 
 // Remove some objects of class "cl" from thread heap and add to central cache
-void ThreadCache::ReleaseToCentralCache(FreeList* src, uint32 cl, int N) {
+void ThreadCache::ReleaseToCentralCache(FreeList* src, uint32_t cl, int N) {
   ASSERT(src == &list_[cl]);
   if (N > src->length()) N = src->length();
   size_t delta_bytes = N * Static::sizemap()->ByteSizeForClass(cl);
@@ -265,7 +270,8 @@ void ThreadCache::IncreaseCacheLimitLocked() {
       next_memory_steal_ = thread_heaps_;
     }
     if (next_memory_steal_ == this ||
-        next_memory_steal_->max_size_ <= kMinThreadCacheSize) {
+        next_memory_steal_->max_size_
+          <= min_per_thread_cache_size_.load(std::memory_order_relaxed)) {
       continue;
     }
     next_memory_steal_->SetMaxSize(next_memory_steal_->max_size_ - kStealAmount);
@@ -292,6 +298,7 @@ void ThreadCache::InitModule() {
     }
     Static::InitStaticVars();
     threadcache_allocator.Init();
+    SetupMallocExtension();
     phinited = 1;
   }
 
@@ -306,113 +313,12 @@ void ThreadCache::InitModule() {
 #endif
 }
 
-void ThreadCache::InitTSD() {
-  ASSERT(!tsd_inited_);
-  perftools_pthread_key_create(&heap_key_, DestroyThreadCache);
-  tsd_inited_ = true;
-
-#ifdef PTHREADS_CRASHES_IF_RUN_TOO_EARLY
-  // We may have used a fake pthread_t for the main thread.  Fix it.
-  pthread_t zero;
-  memset(&zero, 0, sizeof(zero));
+ThreadCache* ThreadCache::NewHeap() {
   SpinLockHolder h(Static::pageheap_lock());
-  for (ThreadCache* h = thread_heaps_; h != NULL; h = h->next_) {
-    if (h->tid_ == zero) {
-      h->tid_ = pthread_self();
-    }
-  }
-#endif
-}
 
-ThreadCache* ThreadCache::CreateCacheIfNecessary() {
-  if (!tsd_inited_) {
-#ifndef NDEBUG
-    // tests that freeing nullptr very early is working
-    free(NULL);
-#endif
-
-    InitModule();
-  }
-
-  // Initialize per-thread data if necessary
-  ThreadCache* heap = NULL;
-
-  bool seach_condition = true;
-#ifdef HAVE_TLS
-  static __thread ThreadCache** current_heap_ptr ATTR_INITIAL_EXEC;
-  if (tsd_inited_) {
-    // In most common case we're avoiding expensive linear search
-    // through all heaps (see below). Working TLS enables faster
-    // protection from malloc recursion in pthread_setspecific
-    seach_condition = false;
-
-    if (current_heap_ptr != NULL) {
-      // we're being recursively called by pthread_setspecific below.
-      return *current_heap_ptr;
-    }
-    current_heap_ptr = &heap;
-  }
-#endif
-
-  {
-    SpinLockHolder h(Static::pageheap_lock());
-    // On some old glibc's, and on freebsd's libc (as of freebsd 8.1),
-    // calling pthread routines (even pthread_self) too early could
-    // cause a segfault.  Since we can call pthreads quite early, we
-    // have to protect against that in such situations by making a
-    // 'fake' pthread.  This is not ideal since it doesn't work well
-    // when linking tcmalloc statically with apps that create threads
-    // before main, so we only do it if we have to.
-#ifdef PTHREADS_CRASHES_IF_RUN_TOO_EARLY
-    pthread_t me;
-    if (!tsd_inited_) {
-      memset(&me, 0, sizeof(me));
-    } else {
-      me = pthread_self();
-    }
-#else
-    const pthread_t me = pthread_self();
-#endif
-
-    // This may be a recursive malloc call from pthread_setspecific()
-    // In that case, the heap for this thread has already been created
-    // and added to the linked list.  So we search for that first.
-    if (seach_condition) {
-      for (ThreadCache* h = thread_heaps_; h != NULL; h = h->next_) {
-        if (h->tid_ == me) {
-          heap = h;
-          break;
-        }
-      }
-    }
-
-    if (heap == NULL) heap = NewHeap(me);
-  }
-
-  // We call pthread_setspecific() outside the lock because it may
-  // call malloc() recursively.  We check for the recursive call using
-  // the "in_setspecific_" flag so that we can avoid calling
-  // pthread_setspecific() if we are already inside pthread_setspecific().
-  if (!heap->in_setspecific_ && tsd_inited_) {
-    heap->in_setspecific_ = true;
-    perftools_pthread_setspecific(heap_key_, heap);
-#ifdef HAVE_TLS
-    // Also keep a copy in __thread for faster retrieval
-    threadlocal_data_.heap = heap;
-    threadlocal_data_.fast_path_heap = heap;
-#endif
-    heap->in_setspecific_ = false;
-  }
-#ifdef HAVE_TLS
-  current_heap_ptr = NULL;
-#endif
-  return heap;
-}
-
-ThreadCache* ThreadCache::NewHeap(pthread_t tid) {
   // Create the heap and add it to the linked list
-  ThreadCache *heap = threadcache_allocator.New();
-  heap->Init(tid);
+  ThreadCache *heap = new (threadcache_allocator.New()) ThreadCache();
+
   heap->next_ = thread_heaps_;
   heap->prev_ = NULL;
   if (thread_heaps_ != NULL) {
@@ -427,46 +333,9 @@ ThreadCache* ThreadCache::NewHeap(pthread_t tid) {
   return heap;
 }
 
-void ThreadCache::BecomeIdle() {
-  if (!tsd_inited_) return;              // No caches yet
-  ThreadCache* heap = GetThreadHeap();
-  if (heap == NULL) return;             // No thread cache to remove
-  if (heap->in_setspecific_) return;    // Do not disturb the active caller
-
-  heap->in_setspecific_ = true;
-  perftools_pthread_setspecific(heap_key_, NULL);
-#ifdef HAVE_TLS
-  // Also update the copy in __thread
-  threadlocal_data_.heap = NULL;
-  threadlocal_data_.fast_path_heap = NULL;
-#endif
-  heap->in_setspecific_ = false;
-  if (GetThreadHeap() == heap) {
-    // Somehow heap got reinstated by a recursive call to malloc
-    // from pthread_setspecific.  We give up in this case.
-    return;
-  }
-
-  // We can now get rid of the heap
-  DeleteCache(heap);
-}
-
-void ThreadCache::DestroyThreadCache(void* ptr) {
-  // Note that "ptr" cannot be NULL since pthread promises not
-  // to invoke the destructor on NULL values, but for safety,
-  // we check anyway.
-  if (ptr == NULL) return;
-#ifdef HAVE_TLS
-  // Prevent fast path of GetThreadHeap() from returning heap.
-  threadlocal_data_.heap = NULL;
-  threadlocal_data_.fast_path_heap = NULL;
-#endif
-  DeleteCache(reinterpret_cast<ThreadCache*>(ptr));
-}
-
 void ThreadCache::DeleteCache(ThreadCache* heap) {
   // Remove all memory from heap
-  heap->Cleanup();
+  heap->~ThreadCache();
 
   // Remove from linked list
   SpinLockHolder h(Static::pageheap_lock());
@@ -487,8 +356,9 @@ void ThreadCache::RecomputePerThreadCacheSize() {
   int n = thread_heap_count_ > 0 ? thread_heap_count_ : 1;
   size_t space = overall_thread_cache_size_ / n;
 
+  size_t min_size = min_per_thread_cache_size_.load(std::memory_order_relaxed);
   // Limit to allowed range
-  if (space < kMinThreadCacheSize) space = kMinThreadCacheSize;
+  if (space < min_size) space = min_size;
   if (space > kMaxThreadCacheSize) space = kMaxThreadCacheSize;
 
   double ratio = space / max<double>(1, per_thread_cache_size_);
@@ -518,7 +388,10 @@ void ThreadCache::GetThreadStats(uint64_t* total_bytes, uint64_t* class_count) {
 
 void ThreadCache::set_overall_thread_cache_size(size_t new_size) {
   // Clip the value to a reasonable range
-  if (new_size < kMinThreadCacheSize) new_size = kMinThreadCacheSize;
+  size_t min_size = min_per_thread_cache_size_.load(std::memory_order_relaxed);
+  if (new_size < min_size) {
+    new_size = min_size;
+  }
   if (new_size > (1<<30)) new_size = (1<<30);     // Limit to 1GB
   overall_thread_cache_size_ = new_size;
 

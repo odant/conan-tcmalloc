@@ -38,6 +38,7 @@
 
 #include "addressmap-inl.h"
 #include "base/basictypes.h"
+#include "base/generic_writer.h"
 #include "base/logging.h"   // for RawFD
 #include "heap-profile-stats.h"
 
@@ -69,14 +70,6 @@ class HeapProfileTable {
     int stack_depth;  // depth of call_stack
     bool live;
     bool ignored;
-  };
-
-  // Info we return about an allocation context.
-  // An allocation context is a unique caller stack trace
-  // of an allocation operation.
-  struct AllocContextInfo : public Stats {
-    int stack_depth;                // Depth of stack trace
-    const void* const* call_stack;  // Stack trace
   };
 
   // Memory (de)allocator interface we'll use.
@@ -140,23 +133,18 @@ class HeapProfileTable {
   // Iterate over the allocation profile data calling "callback"
   // for every allocation.
   void IterateAllocs(AllocIterator callback) const {
-    address_map_->Iterate(MapArgsAllocIterator, callback);
+    address_map_->Iterate([callback] (const void* ptr, AllocValue* v) {
+      AllocInfo info;
+      info.object_size = v->bytes;
+      info.call_stack = v->bucket()->stack;
+      info.stack_depth = v->bucket()->depth;
+      info.live = v->live();
+      info.ignored = v->ignore();
+      callback(ptr, info);
+    });
   }
 
-  // Allocation context profile data iteration callback
-  typedef void (*AllocContextIterator)(const AllocContextInfo& info);
-
-  // Iterate over the allocation context profile data calling "callback"
-  // for every allocation context. Allocation contexts are ordered by the
-  // size of allocated space.
-  void IterateOrderedAllocContexts(AllocContextIterator callback) const;
-
-  // Fill profile data into buffer 'buf' of size 'size'
-  // and return the actual size occupied by the dump in 'buf'.
-  // The profile buckets are dumped in the decreasing order
-  // of currently allocated bytes.
-  // We do not provision for 0-terminating 'buf'.
-  int FillOrderedProfile(char buf[], int size) const;
+  void SaveProfile(tcmalloc::GenericWriter* write) const;
 
   // Cleanup any old profile files matching prefix + ".*" + kFileExt.
   static void CleanupOldProfiles(const char* prefix);
@@ -223,94 +211,21 @@ class HeapProfileTable {
 
   typedef AddressMap<AllocValue> AllocationMap;
 
-  // Arguments that need to be passed DumpBucketIterator callback below.
-  struct BufferArgs {
-    BufferArgs(char* buf_arg, int buflen_arg, int bufsize_arg)
-        : buf(buf_arg),
-          buflen(buflen_arg),
-          bufsize(bufsize_arg) {
-    }
-
-    char* buf;
-    int buflen;
-    int bufsize;
-
-    DISALLOW_COPY_AND_ASSIGN(BufferArgs);
-  };
-
-  // Arguments that need to be passed DumpNonLiveIterator callback below.
-  struct DumpArgs {
-    DumpArgs(RawFD fd_arg, Stats* profile_stats_arg)
-        : fd(fd_arg),
-          profile_stats(profile_stats_arg) {
-    }
-
-    RawFD fd;  // file to write to
-    Stats* profile_stats;  // stats to update (may be NULL)
-  };
-
   // helpers ----------------------------
 
-  // Unparse bucket b and print its portion of profile dump into buf.
-  // We return the amount of space in buf that we use.  We start printing
-  // at buf + buflen, and promise not to go beyond buf + bufsize.
-  // We do not provision for 0-terminating 'buf'.
-  //
-  // If profile_stats is non-NULL, we update *profile_stats by
-  // counting bucket b.
+  // Unparse bucket b and print its portion of profile dump into given
+  // writer.
   //
   // "extra" is appended to the unparsed bucket.  Typically it is empty,
   // but may be set to something like " heapprofile" for the total
   // bucket to indicate the type of the profile.
-  static int UnparseBucket(const Bucket& b,
-                           char* buf, int buflen, int bufsize,
-                           const char* extra,
-                           Stats* profile_stats);
+  static void UnparseBucket(const Bucket& b,
+                            tcmalloc::GenericWriter* writer,
+                            const char* extra);
 
   // Get the bucket for the caller stack trace 'key' of depth 'depth'
   // creating the bucket if needed.
   Bucket* GetBucket(int depth, const void* const key[]);
-
-  // Helper for IterateAllocs to do callback signature conversion
-  // from AllocationMap::Iterate to AllocIterator.
-  static void MapArgsAllocIterator(const void* ptr, AllocValue* v,
-                                   AllocIterator callback) {
-    AllocInfo info;
-    info.object_size = v->bytes;
-    info.call_stack = v->bucket()->stack;
-    info.stack_depth = v->bucket()->depth;
-    info.live = v->live();
-    info.ignored = v->ignore();
-    callback(ptr, info);
-  }
-
-  // Helper to dump a bucket.
-  inline static void DumpBucketIterator(const Bucket* bucket,
-                                        BufferArgs* args);
-
-  // Helper for DumpNonLiveProfile to do object-granularity
-  // heap profile dumping. It gets passed to AllocationMap::Iterate.
-  inline static void DumpNonLiveIterator(const void* ptr, AllocValue* v,
-                                         const DumpArgs& args);
-
-  // Helper for IterateOrderedAllocContexts and FillOrderedProfile.
-  // Creates a sorted list of Buckets whose length is num_buckets_.
-  // The caller is responsible for deallocating the returned list.
-  Bucket** MakeSortedBucketList() const;
-
-  // Helper for TakeSnapshot.  Saves object to snapshot.
-  static void AddToSnapshot(const void* ptr, AllocValue* v, Snapshot* s);
-
-  // Arguments passed to AddIfNonLive
-  struct AddNonLiveArgs {
-    Snapshot* dest;
-    Snapshot* base;
-  };
-
-  // Helper for NonLiveSnapshot.  Adds the object to the destination
-  // snapshot if it is non-live.
-  static void AddIfNonLive(const void* ptr, AllocValue* v,
-                           AddNonLiveArgs* arg);
 
   // Write contents of "*allocations" as a heap profile to
   // "file_name".  "total" must contain the total of all entries in
@@ -389,9 +304,6 @@ class HeapProfileTable::Snapshot {
 
   // Helpers for sorting and generating leak reports
   struct Entry;
-  struct ReportState;
-  static void ReportCallback(const void* ptr, AllocValue* v, ReportState*);
-  static void ReportObject(const void* ptr, AllocValue* v, char*);
 
   DISALLOW_COPY_AND_ASSIGN(Snapshot);
 };

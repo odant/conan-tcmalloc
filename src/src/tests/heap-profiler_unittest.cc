@@ -39,6 +39,9 @@
 // heap-profiler_unittest.sh.
 
 #include "config_for_unittests.h"
+
+#include <gperftools/heap-profiler.h>
+
 #include <stdlib.h>
 #include <stdio.h>
 #include <fcntl.h>                  // for mkdir()
@@ -48,19 +51,20 @@
 #endif
 #include <sys/wait.h>               // for wait()
 #include <string>
+
 #include "base/basictypes.h"
 #include "base/logging.h"
-#include <gperftools/heap-profiler.h>
-
-using std::string;
+#include "testing_portal.h"
 
 static const int kMaxCount = 100000;
 int* g_array[kMaxCount];              // an array of int-vectors
 
+static const char* volatile marker;
+
 static ATTRIBUTE_NOINLINE void Allocate(int start, int end, int size) {
   // NOTE: we're using this to prevent gcc 5 from merging otherwise
   // identical Allocate & Allocate2 functions.
-  VLOG(10, "Allocate");
+  marker = "Allocate";
   for (int i = start; i < end; ++i) {
     if (i < kMaxCount)
       g_array[i] = new int[size];
@@ -68,7 +72,7 @@ static ATTRIBUTE_NOINLINE void Allocate(int start, int end, int size) {
 }
 
 static ATTRIBUTE_NOINLINE void Allocate2(int start, int end, int size) {
-  VLOG(10, "Allocate2");
+  marker = "Allocate2";
   for (int i = start; i < end; ++i) {
     if (i < kMaxCount)
       g_array[i] = new int[size];
@@ -90,7 +94,7 @@ static void TestHeapProfilerStartStopIsRunning() {
     if (tmpdir == NULL)
       tmpdir = "/tmp";
     mkdir(tmpdir, 0755);     // if necessary
-    HeapProfilerStart((string(tmpdir) + "/start_stop").c_str());
+    HeapProfilerStart((std::string(tmpdir) + "/start_stop").c_str());
     CHECK(IsHeapProfilerRunning());
 
     Allocate(0, 40, 100);
@@ -109,7 +113,7 @@ static void TestDumpHeapProfiler() {
     if (tmpdir == NULL)
       tmpdir = "/tmp";
     mkdir(tmpdir, 0755);     // if necessary
-    HeapProfilerStart((string(tmpdir) + "/dump").c_str());
+    HeapProfilerStart((std::string(tmpdir) + "/dump").c_str());
     CHECK(IsHeapProfilerRunning());
 
     Allocate(0, 40, 100);
@@ -123,6 +127,8 @@ static void TestDumpHeapProfiler() {
 
 
 int main(int argc, char** argv) {
+  tcmalloc::TestingPortal::Get()->GetSampleParameter() = 512 << 10;
+
   if (argc > 2 || (argc == 2 && argv[1][0] == '-')) {
     printf("USAGE: %s [number of children to fork]\n", argv[0]);
     exit(0);

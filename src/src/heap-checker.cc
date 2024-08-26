@@ -36,7 +36,7 @@
 
 #include "config.h"
 
-#ifndef HAVE_TLS
+#ifndef __linux__
 #error we only support non-ancient Linux-es with native TLS support
 #endif
 
@@ -79,6 +79,7 @@
 #include "base/linuxthreads.h"
 #include "base/logging.h"
 #include "base/low_level_alloc.h"
+#include "base/proc_maps_iterator.h"
 #include "base/spinlock.h"
 #include "base/stl_allocator.h"
 #include "base/sysinfo.h"
@@ -272,7 +273,7 @@ DEFINE_int32(heap_check_pointer_source_alignment,
 // in HaveOnHeapLocked will get slower when there are large on-heap objects)
 // and make it probabilistically more likely to miss leaks
 // of large-sized objects.
-static const int64 kHeapCheckMaxPointerOffset = 1024;
+static const int64_t kHeapCheckMaxPointerOffset = 1024;
 DEFINE_int64(heap_check_max_pointer_offset,
 	     EnvToInt("HEAP_CHECK_MAX_POINTER_OFFSET",
                       kHeapCheckMaxPointerOffset),
@@ -312,7 +313,7 @@ DEFINE_string(heap_check_dump_directory,
 //----------------------------------------------------------------------
 
 // Global lock for all the global data of this module.
-static SpinLock heap_checker_lock(SpinLock::LINKER_INITIALIZED);
+static SpinLock heap_checker_lock;
 
 //----------------------------------------------------------------------
 
@@ -366,7 +367,7 @@ class HeapLeakChecker::Allocator {
   static void Init() {
     RAW_DCHECK(heap_checker_lock.IsHeld(), "");
     RAW_DCHECK(arena_ == NULL, "");
-    arena_ = LowLevelAlloc::NewArena(0, LowLevelAlloc::DefaultArena());
+    arena_ = LowLevelAlloc::NewArena(nullptr);
   }
   static void Shutdown() {
     RAW_DCHECK(heap_checker_lock.IsHeld(), "");
@@ -510,71 +511,14 @@ static GlobalRegionCallerRangeMap* global_region_caller_ranges = NULL;
 // of active Disabler objects.  Any objects allocated while the
 // count > 0 are not reported.
 
-#ifdef HAVE_TLS
+static __thread int thread_disable_counter ATTR_INITIAL_EXEC;
 
-static __thread int thread_disable_counter
-// The "inital exec" model is faster than the default TLS model, at
-// the cost you can't dlopen this library.  But dlopen on heap-checker
-// doesn't work anyway -- it must run before main -- so this is a good
-// trade-off.
-# ifdef HAVE___ATTRIBUTE__
-   __attribute__ ((tls_model ("initial-exec")))
-# endif
-    ;
 inline int get_thread_disable_counter() {
   return thread_disable_counter;
 }
 inline void set_thread_disable_counter(int value) {
   thread_disable_counter = value;
 }
-
-#else  // #ifdef HAVE_TLS
-
-static pthread_key_t thread_disable_counter_key;
-static int main_thread_counter;   // storage for use before main()
-static bool use_main_thread_counter = true;
-
-// TODO(csilvers): this is called from NewHook, in the middle of malloc().
-// If perftools_pthread_getspecific calls malloc, that will lead to an
-// infinite loop.  I don't know how to fix that, so I hope it never happens!
-inline int get_thread_disable_counter() {
-  if (use_main_thread_counter)  // means we're running really early
-    return main_thread_counter;
-  void* p = perftools_pthread_getspecific(thread_disable_counter_key);
-  return (intptr_t)p;   // kinda evil: store the counter directly in the void*
-}
-
-inline void set_thread_disable_counter(int value) {
-  if (use_main_thread_counter) {   // means we're running really early
-    main_thread_counter = value;
-    return;
-  }
-  intptr_t pointer_sized_value = value;
-  // kinda evil: store the counter directly in the void*
-  void* p = (void*)pointer_sized_value;
-  // NOTE: this may call malloc, which will call NewHook which will call
-  // get_thread_disable_counter() which will call pthread_getspecific().  I
-  // don't know if anything bad can happen if we call getspecific() in the
-  // middle of a setspecific() call.  It seems to work ok in practice...
-  perftools_pthread_setspecific(thread_disable_counter_key, p);
-}
-
-// The idea here is that this initializer will run pretty late: after
-// pthreads have been totally set up.  At this point we can call
-// pthreads routines, so we set those up.
-class InitThreadDisableCounter {
- public:
-  InitThreadDisableCounter() {
-    pthread_key_create(&thread_disable_counter_key, NULL);
-    // Set up the main thread's value, which we have a special variable for.
-    void* p = (void*)(intptr_t)main_thread_counter;   // store the counter directly
-    perftools_pthread_setspecific(thread_disable_counter_key, p);
-    use_main_thread_counter = false;
-  }
-};
-InitThreadDisableCounter init_thread_disable_counter;
-
-#endif  // #ifdef HAVE_TLS
 
 HeapLeakChecker::Disabler::Disabler() {
   // It is faster to unconditionally increment the thread-local
@@ -906,7 +850,7 @@ void HeapLeakChecker::DisableLibraryAllocsLocked(const char* library,
   if (IsLibraryNamed(library, "/libpthread")  ||
         // libpthread has a lot of small "system" leaks we don't care about.
         // In particular it allocates memory to store data supplied via
-        // pthread_setspecific (which can be the only pointer to a heap object).
+        // tcmalloc::SetTlsValue (which can be the only pointer to a heap object).
       IsLibraryNamed(library, "/libdl")  ||
         // library loaders leak some "system" heap that we don't care about
       IsLibraryNamed(library, "/libcrypto")  ||
@@ -964,26 +908,17 @@ void HeapLeakChecker::DisableLibraryAllocsLocked(const char* library,
 HeapLeakChecker::ProcMapsResult HeapLeakChecker::UseProcMapsLocked(
                                   ProcMapsTask proc_maps_task) {
   RAW_DCHECK(heap_checker_lock.IsHeld(), "");
-  // Need to provide own scratch memory to ProcMapsIterator:
-  ProcMapsIterator::Buffer buffer;
-  ProcMapsIterator it(0, &buffer);
-  if (!it.Valid()) {
-    int errsv = errno;
-    RAW_LOG(ERROR, "Could not open /proc/self/maps: errno=%d. "
-                   "Libraries will not be handled correctly.", errsv);
-    return CANT_OPEN_PROC_MAPS;
-  }
-  uint64 start_address, end_address, file_offset;
-  int64 inode;
-  char *permissions, *filename;
   bool saw_shared_lib = false;
   bool saw_nonzero_inode = false;
   bool saw_shared_lib_with_nonzero_inode = false;
-  while (it.Next(&start_address, &end_address, &permissions,
-                 &file_offset, &inode, &filename)) {
+
+  bool ok = tcmalloc::ForEachProcMapping([&] (const tcmalloc::ProcMapping& mapping) {
+    const uint64_t start_address = mapping.start, end_address = mapping.end;
+    const char *filename = mapping.filename;
+
     if (start_address >= end_address) {
       // Warn if a line we can be interested in is ill-formed:
-      if (inode != 0) {
+      if (mapping.inode != 0) {
         RAW_LOG(ERROR, "Errors reading /proc/self/maps. "
                        "Some global memory regions will not "
                        "be handled correctly.");
@@ -992,14 +927,14 @@ HeapLeakChecker::ProcMapsResult HeapLeakChecker::UseProcMapsLocked(
       // probably due to the interplay of how /proc/self/maps is updated
       // while we read it in chunks in ProcMapsIterator and
       // do things in this loop.
-      continue;
+      return;
     }
     // Determine if any shared libraries are present (this is the same
     // list of extensions as is found in pprof).  We want to ignore
     // 'fake' libraries with inode 0 when determining.  However, some
     // systems don't share inodes via /proc, so we turn off this check
     // if we don't see any evidence that we're getting inode info.
-    if (inode != 0) {
+    if (mapping.inode != 0) {
       saw_nonzero_inode = true;
     }
     if ((hc_strstr(filename, "lib") && hc_strstr(filename, ".so")) ||
@@ -1008,7 +943,7 @@ HeapLeakChecker::ProcMapsResult HeapLeakChecker::UseProcMapsLocked(
         // that we are unlikely to get false matches just checking that.
         hc_strstr(filename, ".dylib") || hc_strstr(filename, ".bundle")) {
       saw_shared_lib = true;
-      if (inode != 0) {
+      if (mapping.inode != 0) {
         saw_shared_lib_with_nonzero_inode = true;
       }
     }
@@ -1018,18 +953,26 @@ HeapLeakChecker::ProcMapsResult HeapLeakChecker::UseProcMapsLocked(
         // All lines starting like
         // "401dc000-4030f000 r??p 00132000 03:01 13991972  lib/bin"
         // identify a data and code sections of a shared library or our binary
-        if (inode != 0 && strncmp(permissions, "r-xp", 4) == 0) {
+        if (mapping.inode != 0 && strncmp(mapping.flags, "r-xp", 4) == 0) {
           DisableLibraryAllocsLocked(filename, start_address, end_address);
         }
         break;
       case RECORD_GLOBAL_DATA:
         RecordGlobalDataLocked(start_address, end_address,
-                               permissions, filename);
+                               mapping.flags, filename);
         break;
       default:
         RAW_CHECK(0, "");
     }
+  });
+
+  if (!ok) {
+    int errsv = errno;
+    RAW_LOG(ERROR, "Could not open /proc/self/maps: errno=%d. "
+            "Libraries will not be handled correctly.", errsv);
+    return CANT_OPEN_PROC_MAPS;
   }
+
   // If /proc/self/maps is reporting inodes properly (we saw a
   // non-zero inode), then we only say we saw a shared lib if we saw a
   // 'real' one, with a non-zero inode.
@@ -1046,8 +989,8 @@ HeapLeakChecker::ProcMapsResult HeapLeakChecker::UseProcMapsLocked(
 
 // Total number and size of live objects dropped from the profile;
 // (re)initialized in IgnoreAllLiveObjectsLocked.
-static int64 live_objects_total;
-static int64 live_bytes_total;
+static int64_t live_objects_total;
+static int64_t live_bytes_total;
 
 // pid of the thread that is doing the current leak check
 // (protected by our lock; IgnoreAllLiveObjectsLocked sets it)
@@ -1414,7 +1357,7 @@ void HeapLeakChecker::IgnoreAllLiveObjectsLocked(const void* self_stack_top) {
 static size_t pointer_source_alignment = kPointerSourceAlignment;
 // Global lock for HeapLeakChecker::DoNoLeaks
 // to protect pointer_source_alignment.
-static SpinLock alignment_checker_lock(SpinLock::LINKER_INITIALIZED);
+static SpinLock alignment_checker_lock;
 
 // This function changes the live bits in the heap_profile-table's state:
 // we only record the live objects to be skipped.
@@ -1446,8 +1389,8 @@ static SpinLock alignment_checker_lock(SpinLock::LINKER_INITIALIZED);
 /*static*/ void HeapLeakChecker::IgnoreLiveObjectsLocked(const char* name,
                                                          const char* name2) {
   RAW_DCHECK(heap_checker_lock.IsHeld(), "");
-  int64 live_object_count = 0;
-  int64 live_byte_count = 0;
+  int64_t live_object_count = 0;
+  int64_t live_byte_count = 0;
   while (!live_objects->empty()) {
     const char* object =
       reinterpret_cast<const char*>(live_objects->back().ptr);
@@ -1703,7 +1646,7 @@ ssize_t HeapLeakChecker::ObjectsLeaked() const {
 }
 
 // Save pid of main thread for using in naming dump files
-static int32 main_thread_pid = getpid();
+static int32_t main_thread_pid = getpid();
 #ifdef HAVE_PROGRAM_INVOCATION_NAME
 #ifdef __UCLIBC__
 extern const char* program_invocation_name;
@@ -2108,7 +2051,7 @@ void HeapLeakChecker_InternalInitStart() {
     new string(FLAGS_heap_check_dump_directory + "/" + invocation_name());
 
   // Finalize prefix for dumping leak checking profiles.
-  const int32 our_pid = getpid();   // safest to call getpid() outside lock
+  const int32_t our_pid = getpid();   // safest to call getpid() outside lock
   { SpinLockHolder l(&heap_checker_lock);
     // main_thread_pid might still be 0 if this function is being called before
     // global constructors.  In that case, our pid *is* the main pid.
@@ -2301,8 +2244,6 @@ void HeapLeakChecker::TurnItselfOffLocked() {
   RAW_CHECK(!heap_checker_on, "");
 }
 
-extern bool heap_leak_checker_bcad_variable;  // in heap-checker-bcad.cc
-
 static bool has_called_before_constructors = false;
 
 // TODO(maxim): inline this function with
@@ -2317,7 +2258,6 @@ void HeapLeakChecker_BeforeConstructors() {
   has_called_before_constructors = true;
 
   heap_checker_pid = getpid();  // set it always
-  heap_leak_checker_bcad_variable = true;
   // just to reference it, so that heap-checker-bcad.o is linked in
 
   // This function can be called *very* early, before the normal
@@ -2362,6 +2302,13 @@ extern "C" int MallocHook_InitAtFirstAllocation_HeapLeakChecker() {
 }
 
 // This function is executed after all global object destructors run.
+//
+// Note, heap checker is Linux-only. Which implies we're dealing with
+// gcc-compatible compiler, so we can do __attribute__ thingy. In
+// practice destructor functions end up being called after c++
+// destructors (those are set up via __cxa_atexit thingy), so we get
+// the right ordering.
+__attribute__((destructor))
 void HeapLeakChecker_AfterDestructors() {
   { SpinLockHolder l(&heap_checker_lock);
     // can get here (via forks?) with other pids
@@ -2440,3 +2387,18 @@ const void* HeapLeakChecker::GetAllocCaller(void* ptr) {
   RAW_CHECK(info.stack_depth >= 1, "");
   return info.call_stack[0];
 }
+
+namespace tcmalloc {
+
+ATTRIBUTE_HIDDEN
+void DoIterateMemoryRegionMap(tcmalloc::FunctionRef<void(const void*)> callback) {
+  { MemoryRegionMap::LockHolder l;
+    for (MemoryRegionMap::RegionIterator
+           i = MemoryRegionMap::BeginRegionLocked();
+           i != MemoryRegionMap::EndRegionLocked(); ++i) {
+      callback(&*i);
+    }
+  }
+}
+
+}  // namespace tcmalloc

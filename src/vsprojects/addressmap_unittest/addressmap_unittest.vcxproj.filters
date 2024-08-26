@@ -17,6 +17,9 @@
     <ClCompile Include="..\..\src\base\dynamic_annotations.cc">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\src\base\generic_writer.cc">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\src\base\sysinfo.cc">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -43,7 +46,7 @@
     <ClInclude Include="..\..\src\base\commandlineflags.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="..\..\src\windows\config.h">
+    <ClInclude Include="..\config.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="..\..\src\config_for_unittests.h">
