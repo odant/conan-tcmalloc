@@ -1,17 +1,18 @@
 diff --git a/src/vsprojects/libtcmalloc_minimal/libtcmalloc_minimal.vcxproj b/src/vsprojects/libtcmalloc_minimal/libtcmalloc_minimal.vcxproj
-index 1bd87bc..c97256c 100644
+index f119788..173a538 100644
 --- a/src/vsprojects/libtcmalloc_minimal/libtcmalloc_minimal.vcxproj
 +++ b/src/vsprojects/libtcmalloc_minimal/libtcmalloc_minimal.vcxproj
-@@ -30,6 +30,8 @@
+@@ -30,7 +30,8 @@
      <UseNativeEnvironment>true</UseNativeEnvironment>
      <ProjectGuid>{55E2B3AE-3CA1-4DB6-97F7-0A044D6F446F}</ProjectGuid>
      <Keyword>Win32Proj</Keyword>
+-    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
 +    <LatestTargetPlatformVersion>$([Microsoft.Build.Utilities.ToolLocationHelper]::GetLatestSDKTargetPlatformVersion('Windows', '10.0'))</LatestTargetPlatformVersion>
 +    <WindowsTargetPlatformVersion Condition="'$(WindowsTargetPlatformVersion)' == ''">$(LatestTargetPlatformVersion)</WindowsTargetPlatformVersion>
    </PropertyGroup>
    <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
    <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release-Patch|Win32'" Label="Configuration">
-@@ -99,21 +101,33 @@
+@@ -100,21 +101,33 @@
    </PropertyGroup>
    <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
      <IncludePath>..\..\src\windows;..\..\src;$(IncludePath)</IncludePath>
@@ -45,7 +46,7 @@ index 1bd87bc..c97256c 100644
    </PropertyGroup>
    <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
      <ClCompile>
-@@ -123,6 +137,7 @@
+@@ -125,6 +138,7 @@
      </ClCompile>
      <Link>
        <SubSystem>Windows</SubSystem>
@@ -53,7 +54,7 @@ index 1bd87bc..c97256c 100644
      </Link>
    </ItemDefinitionGroup>
    <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
-@@ -133,6 +148,7 @@
+@@ -136,6 +150,7 @@
      </ClCompile>
      <Link>
        <SubSystem>Windows</SubSystem>
@@ -61,7 +62,7 @@ index 1bd87bc..c97256c 100644
      </Link>
    </ItemDefinitionGroup>
    <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release-Patch|Win32'">
-@@ -145,6 +161,7 @@
+@@ -149,6 +164,7 @@
      </ClCompile>
      <Link>
        <SubSystem>Windows</SubSystem>
@@ -69,7 +70,7 @@ index 1bd87bc..c97256c 100644
        <OptimizeReferences>true</OptimizeReferences>
        <EnableCOMDATFolding>true</EnableCOMDATFolding>
      </Link>
-@@ -160,6 +177,7 @@
+@@ -165,6 +181,7 @@
      </ClCompile>
      <Link>
        <SubSystem>Windows</SubSystem>
@@ -77,7 +78,7 @@ index 1bd87bc..c97256c 100644
        <OptimizeReferences>true</OptimizeReferences>
        <EnableCOMDATFolding>true</EnableCOMDATFolding>
      </Link>
-@@ -174,6 +192,7 @@
+@@ -196,6 +213,7 @@
      </ClCompile>
      <Link>
        <SubSystem>Windows</SubSystem>
@@ -85,15 +86,7 @@ index 1bd87bc..c97256c 100644
        <OptimizeReferences>true</OptimizeReferences>
        <EnableCOMDATFolding>true</EnableCOMDATFolding>
      </Link>
-@@ -189,6 +208,7 @@
-     </ClCompile>
-     <Link>
-       <SubSystem>Windows</SubSystem>
-+      <MinimumRequiredVersion>6.2</MinimumRequiredVersion>
-       <OptimizeReferences>true</OptimizeReferences>
-       <EnableCOMDATFolding>true</EnableCOMDATFolding>
-     </Link>
-@@ -277,6 +297,9 @@
+@@ -286,6 +304,9 @@
      <ClInclude Include="..\..\src\windows\port.h" />
      <ClInclude Include="..\..\src\windows\preamble_patcher.h" />
    </ItemGroup>
