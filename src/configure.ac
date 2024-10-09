@@ -4,12 +4,12 @@
 # make sure we're interpreted by some minimal autoconf
 AC_PREREQ([2.69])
 
-AC_INIT([gperftools],[2.15],[gperftools@googlegroups.com])
+AC_INIT([gperftools],[2.16],[gperftools@googlegroups.com])
 # Update this value for every release!  (A:B:C will map to foo.so.(A-C).C.B)
 # http://www.gnu.org/software/libtool/manual/html_node/Updating-version-info.html
-TCMALLOC_SO_VERSION=9:16:5
-PROFILER_SO_VERSION=5:11:5
-TCMALLOC_AND_PROFILER_SO_VERSION=10:11:6
+TCMALLOC_SO_VERSION=9:18:5
+PROFILER_SO_VERSION=5:13:5
+TCMALLOC_AND_PROFILER_SO_VERSION=10:13:6
 
 AC_SUBST(TCMALLOC_SO_VERSION)
 AC_SUBST(PROFILER_SO_VERSION)
@@ -20,7 +20,7 @@ AC_SUBST(TCMALLOC_AND_PROFILER_SO_VERSION)
 AC_CONFIG_SRCDIR(README)
 AC_CONFIG_MACRO_DIR([m4])
 AC_CANONICAL_HOST
-AM_INIT_AUTOMAKE([dist-zip foreign])
+AM_INIT_AUTOMAKE([dist-zip foreign tar-ustar])
 AC_CONFIG_HEADERS([src/config.h])
 
 AM_MAINTAINER_MODE()
@@ -275,6 +275,18 @@ AC_CHECK_HEADERS(asm/ptrace.h)           # get ptrace macros, e.g. PT_NIP
 
 # check for socketpair, some system, such as QNX, need link in an socket library to use it
 AC_SEARCH_LIBS([socketpair], [socket])
+
+REGEX_LIBS=
+# "sufficiently unix" systems need regexec for unit tests
+if test "x$need_nanosleep" = xyes; then
+  save_LIBS="$LIBS"
+  LIBS="$REGEX_LIBS"
+  # QNX needs -lregex; but lets test just in case
+  AC_SEARCH_LIBS([regexec], [regex], [], [AC_MSG_ERROR([failed to locate regexec() (used for tests)])])
+  REGEX_LIBS="$LIBS"
+  LIBS="$save_LIBS"
+fi
+AC_SUBST(REGEX_LIBS)
 
 # We override a lot of memory allocation routines, not all of which are
 # standard.  For those the system doesn't declare, we'll declare ourselves.

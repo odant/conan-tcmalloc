@@ -30,7 +30,10 @@
 #include <stdint.h>
 
 #include <algorithm>
+#include <memory>
+#include <new>
 #include <random>
+#include <thread>
 
 #include "run_benchmark.h"
 
@@ -77,63 +80,47 @@ static void bench_fastpath_simple(long iterations,
   }
 }
 
-#ifdef __GNUC__
-#define HAVE_SIZED_FREE_OPTION
-
-extern "C" void tc_delete_sized(void *ptr, size_t size) __attribute__((weak));
-extern "C" void *tc_memalign(size_t align, size_t size) __attribute__((weak));
-
-static bool is_sized_free_available(void)
-{
-  return tc_delete_sized != NULL;
-}
-
-static bool is_memalign_available(void)
-{
-  return tc_memalign != NULL;
-}
-
+#if __cpp_sized_deallocation
 static void bench_fastpath_simple_sized(long iterations,
                                         uintptr_t param)
 {
   size_t sz = static_cast<size_t>(param);
   for (; iterations>0; iterations--) {
     void *p = (operator new)(sz);
-    tc_delete_sized(p, sz);
+    (operator delete)(p, sz);
     // next iteration will use same free list as this iteration. So it
     // should be prevent next iterations malloc to go too far before
     // free done. But using same size will make free "too fast" since
     // we'll hit size class cache.
   }
 }
+#endif  // __cpp_sized_deallocation
 
+#if __cpp_aligned_new
 static void bench_fastpath_memalign(long iterations,
                                     uintptr_t param)
 {
   size_t sz = static_cast<size_t>(param);
   for (; iterations>0; iterations--) {
-    void *p = tc_memalign(32, sz);
-    free(p);
+    static constexpr std::align_val_t kAlign{32};
+    void *p = (operator new)(sz, kAlign);
+    (operator delete)(p, sz, kAlign);
     // next iteration will use same free list as this iteration. So it
     // should be prevent next iterations malloc to go too far before
     // free done. But using same size will make free "too fast" since
     // we'll hit size class cache.
   }
 }
-
-#endif // __GNUC__
-
-#define STACKSZ (1 << 16)
+#endif  // __cpp_aligned_new
 
 static void bench_fastpath_stack(long iterations,
                                  uintptr_t _param)
 {
 
-  void *stack[STACKSZ];
   size_t sz = 64;
   long param = static_cast<long>(_param);
-  param &= STACKSZ - 1;
-  param = param ? param : 1;
+  param = std::max(1l, param);
+  std::unique_ptr<void*[]> stack = std::make_unique<void*[]>(param);
   for (; iterations>0; iterations -= param) {
     for (long k = param-1; k >= 0; k--) {
       void *p = (operator new)(sz);
@@ -151,18 +138,21 @@ static void bench_fastpath_stack_simple(long iterations,
                                         uintptr_t _param)
 {
 
-  void *stack[STACKSZ];
-  size_t sz = 128;
+  size_t sz = 32;
   long param = static_cast<long>(_param);
-  param &= STACKSZ - 1;
-  param = param ? param : 1;
+  param = std::max(1l, param);
+  std::unique_ptr<void*[]> stack = std::make_unique<void*[]>(param);
   for (; iterations>0; iterations -= param) {
     for (long k = param-1; k >= 0; k--) {
       void *p = (operator new)(sz);
       stack[k] = p;
     }
     for (long k = 0; k < param; k++) {
+#if __cpp_sized_deallocation
+      (operator delete)(stack[k], sz);
+#else
       (operator delete)(stack[k]);
+#endif
     }
   }
 }
@@ -173,15 +163,14 @@ static void bench_fastpath_rnd_dependent(long iterations,
   static const uintptr_t rnd_c = 1013904223;
   static const uintptr_t rnd_a = 1664525;
 
-  void *ptrs[STACKSZ];
   size_t sz = 128;
   if ((_param & (_param - 1))) {
     abort();
   }
-  if (_param > STACKSZ) {
-    abort();
-  }
-  int param = static_cast<int>(_param);
+
+  long param = static_cast<long>(_param);
+  param = std::max(1l, param);
+  std::unique_ptr<void*[]> ptrs = std::make_unique<void*[]>(param);
 
   for (; iterations>0; iterations -= param) {
     for (int k = param-1; k >= 0; k--) {
@@ -202,21 +191,62 @@ static void bench_fastpath_rnd_dependent(long iterations,
   }
 }
 
-static void *randomize_buffer[13<<20];
+static void bench_fastpath_rnd_dependent_8cores(long iterations,
+                                                uintptr_t _param)
+{
+  static const uintptr_t rnd_c = 1013904223;
+  static const uintptr_t rnd_a = 1664525;
 
-
-void randomize_one_size_class(size_t size) {
-  int count = (100<<20) / size;
-  if (count * sizeof(randomize_buffer[0]) > sizeof(randomize_buffer)) {
+  if ((_param & (_param - 1))) {
     abort();
   }
-  for (int i = 0; i < count; i++) {
-    randomize_buffer[i] = malloc(size);
+
+  long param = static_cast<long>(_param);
+  param = std::max(1l, param);
+
+  auto body = [iterations, param] () {
+    size_t sz = 128;
+    std::unique_ptr<void*[]> ptrs = std::make_unique<void*[]>(param);
+
+    for (long i = iterations; i>0; i -= param) {
+      for (int k = param-1; k >= 0; k--) {
+        void *p = (operator new)(sz);
+        ptrs[k] = p;
+        sz = ((sz | reinterpret_cast<size_t>(p)) & 511) + 16;
+      }
+
+      // this will iterate through all objects in order that is
+      // unpredictable to processor's prefetchers
+      uint32_t rnd = 0;
+      uint32_t free_idx = 0;
+      do {
+        (operator delete)(ptrs[free_idx]);
+        rnd = rnd * rnd_a + rnd_c;
+        free_idx = rnd & (param - 1);
+      } while (free_idx != 0);
+    }
+  };
+
+  std::thread ts[] = {
+    std::thread{body}, std::thread{body}, std::thread{body}, std::thread{body},
+    std::thread{body}, std::thread{body}, std::thread{body}, std::thread{body}};
+  for (auto &t : ts) {
+    t.join();
+  }
+}
+
+void randomize_one_size_class(size_t size) {
+  size_t count = (100<<20) / size;
+  auto randomize_buffer = std::make_unique<void*[]>(count);
+
+  for (size_t i = 0; i < count; i++) {
+    randomize_buffer[i] = (operator new)(size);
   }
 
-  std::shuffle(randomize_buffer, randomize_buffer + count, std::minstd_rand(rand()));
-  for (int i = 0; i < count; i++) {
-    free(randomize_buffer[i]);
+  std::shuffle(randomize_buffer.get(), randomize_buffer.get() + count, std::minstd_rand(rand()));
+
+  for (size_t i = 0; i < count; i++) {
+    (operator delete)(randomize_buffer[i]);
   }
 }
 
@@ -240,11 +270,15 @@ void randomize_size_classes() {
   }
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
-  printf("Trying to randomize freelists..."); fflush(stdout);
-  randomize_size_classes();
-  printf("done.\n");
+  init_benchmark(&argc, &argv);
+
+  if (!benchmark_list_only) {
+    printf("Trying to randomize freelists..."); fflush(stdout);
+    randomize_size_classes();
+    printf("done.\n");
+  }
 
   report_benchmark("bench_fastpath_throughput", bench_fastpath_throughput, 0);
   report_benchmark("bench_fastpath_dependent", bench_fastpath_dependent, 0);
@@ -252,25 +286,29 @@ int main(void)
   report_benchmark("bench_fastpath_simple", bench_fastpath_simple, 2048);
   report_benchmark("bench_fastpath_simple", bench_fastpath_simple, 16384);
 
-#ifdef HAVE_SIZED_FREE_OPTION
-  if (is_sized_free_available()) {
-    report_benchmark("bench_fastpath_simple_sized", bench_fastpath_simple_sized, 64);
-    report_benchmark("bench_fastpath_simple_sized", bench_fastpath_simple_sized, 2048);
-  }
+#if __cpp_sized_deallocation
+  report_benchmark("bench_fastpath_simple_sized", bench_fastpath_simple_sized, 64);
+  report_benchmark("bench_fastpath_simple_sized", bench_fastpath_simple_sized, 2048);
+#endif
 
-  if (is_memalign_available()) {
-    report_benchmark("bench_fastpath_memalign", bench_fastpath_memalign, 64);
-    report_benchmark("bench_fastpath_memalign", bench_fastpath_memalign, 2048);
-  }
-
+#if __cpp_aligned_new
+  report_benchmark("bench_fastpath_memalign", bench_fastpath_memalign, 64);
+  report_benchmark("bench_fastpath_memalign", bench_fastpath_memalign, 2048);
 #endif
 
   for (int i = 8; i <= 512; i <<= 1) {
     report_benchmark("bench_fastpath_stack", bench_fastpath_stack, i);
   }
+
   report_benchmark("bench_fastpath_stack_simple", bench_fastpath_stack_simple, 32);
   report_benchmark("bench_fastpath_stack_simple", bench_fastpath_stack_simple, 8192);
+  report_benchmark("bench_fastpath_stack_simple", bench_fastpath_stack_simple, 32768);
+
   report_benchmark("bench_fastpath_rnd_dependent", bench_fastpath_rnd_dependent, 32);
   report_benchmark("bench_fastpath_rnd_dependent", bench_fastpath_rnd_dependent, 8192);
+  report_benchmark("bench_fastpath_rnd_dependent", bench_fastpath_rnd_dependent, 32768);
+
+  report_benchmark("bench_fastpath_rnd_dependent_8cores", bench_fastpath_rnd_dependent_8cores, 32768);
+
   return 0;
 }

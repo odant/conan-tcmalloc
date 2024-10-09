@@ -251,7 +251,14 @@ int ATTRIBUTE_NOINLINE CaptureLeafWSkip(void **stack, int stack_len) {
     return rv;
   };
 
-  int size = trampoline(stack, stack_len);
+  int size;
+
+  // Lets ensure size skip_count > frames_available case is sensible
+  // as well.
+  size = GetStackTrace(stack, stack_len, 10240);
+  CHECK_EQ(size, 0);
+
+  size = trampoline(stack, stack_len);
 
   printf("Obtained %d stack frames.\n", size);
   CHECK_GE(size, 1);
@@ -366,7 +373,7 @@ void RunTest() {
 
 #if TEST_UCONTEXT_BITS
   bool want_to_test = !skipping_ucontext;
-#if !__linux__
+#if !__linux__ || !defined(__GLIBC__)
   // Our current "with ucontext" backtracing relies on fixed number of
   // stack frames to skip. Which is brittle and actually fails on
   // e.g. BSDs. There is a notable exception of generic_fp

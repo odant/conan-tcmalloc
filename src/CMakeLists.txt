@@ -5,14 +5,14 @@ cmake_minimum_required(VERSION 3.12)
 
 # Based on configure.ac
 
-project(gperftools VERSION 2.15 LANGUAGES C CXX
+project(gperftools VERSION 2.16 LANGUAGES C CXX
         DESCRIPTION "Performance tools for C++"
         HOMEPAGE_URL https://github.com/gperftools/gperftools)
 
 # Update this value for every release!
-set(TCMALLOC_SO_VERSION 9.16.5)
-set(PROFILER_SO_VERSION 5.11.5)
-set(TCMALLOC_AND_PROFILER_SO_VERSION 10.11.6)
+set(TCMALLOC_SO_VERSION 9.18.5)
+set(PROFILER_SO_VERSION 5.13.5)
+set(TCMALLOC_AND_PROFILER_SO_VERSION 10.13.6)
 
 # The user can choose not to compile in the heap-profiler, the
 # heap-checker, or the cpu-profiler.  There's also the possibility
@@ -662,6 +662,10 @@ if(BUILD_TESTING)
   target_link_libraries(function_ref_test gtest)
   add_test(function_ref_test function_ref_test)
 
+  add_executable(trivialre_test benchmark/trivialre_test.cc)
+  target_link_libraries(trivialre_test gtest)
+  add_test(trivialre_test trivialre_test)
+
   add_executable(generic_writer_test src/tests/generic_writer_test.cc)
   target_link_libraries(generic_writer_test common gtest)
   add_test(generic_writer_test generic_writer_test)
@@ -801,7 +805,12 @@ if(GPERFTOOLS_BUILD_HEAP_CHECKER OR GPERFTOOLS_BUILD_HEAP_PROFILER)
 
     list(APPEND TESTS_ENVIRONMENT PPROF_PATH=${CMAKE_CURRENT_SOURCE_DIR}/src/pprof)
 
-    add_executable(sampler_test src/tests/sampler_test.cc src/sampler.cc)
+    add_executable(sampler_test src/tests/sampler_test.cc
+      src/sampler.cc
+      src/base/spinlock.cc
+      src/base/spinlock_internal.cc
+      src/base/sysinfo.cc
+      src/base/logging.cc)
     target_link_libraries(sampler_test gtest)
     add_test(sampler_test sampler_test)
 

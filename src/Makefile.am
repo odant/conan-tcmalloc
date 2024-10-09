@@ -163,6 +163,7 @@ libgtest_la_SOURCES = vendor/googletest/googletest/src/gtest_main.cc \
 
 libgtest_la_CPPFLAGS = -I$(top_srcdir)/vendor/googletest/googletest/include \
  -I$(top_srcdir)/vendor/googletest/googletest/ $(AM_CPPFLAGS)
+libgtest_la_LIBADD = $(REGEX_LIBS)
 
 gtest_CPPFLAGS = -I$(top_srcdir)/vendor/googletest/googletest/include $(AM_CPPFLAGS)
 
@@ -322,6 +323,11 @@ TESTS += function_ref_test
 function_ref_test_SOURCES = src/tests/function_ref_test.cc
 function_ref_test_CPPFLAGS = $(gtest_CPPFLAGS)
 function_ref_test_LDADD = libgtest.la
+
+TESTS += trivialre_test
+trivialre_test_SOURCES = benchmark/trivialre_test.cc
+trivialre_test_CPPFLAGS = $(gtest_CPPFLAGS)
+trivialre_test_LDADD = libgtest.la
 
 TESTS += pagemap_unittest
 pagemap_unittest_SOURCES = src/tests/pagemap_unittest.cc \
@@ -571,7 +577,7 @@ endif WITH_DEBUGALLOC
 if !MINGW
 noinst_LTLIBRARIES += librun_benchmark.la
 librun_benchmark_la_SOURCES = \
-	benchmark/run_benchmark.cc benchmark/run_benchmark.h
+	benchmark/run_benchmark.cc
 
 noinst_PROGRAMS += malloc_bench malloc_bench_shared \
 	binary_trees binary_trees_shared
@@ -716,7 +722,7 @@ TESTS += sampling_test
 sampling_test_SOURCES = src/tests/sampling_test.cc
 sampling_test_LDFLAGS = $(TCMALLOC_FLAGS) $(AM_LDFLAGS)
 sampling_test_CPPFLAGS = $(AM_CPPFLAGS) "-DPPROF_PATH=$(top_srcdir)/src/pprof"
-sampling_test_LDADD = libtcmalloc.la
+sampling_test_LDADD = libtcmalloc.la $(REGEX_LIBS)
 
 endif WITH_HEAP_PROFILER_OR_CHECKER
 
@@ -790,7 +796,7 @@ sampling_debug_test_SOURCES = $(sampling_test_SOURCES)
 sampling_debug_test_CXXFLAGS = $(sampling_test_CXXFLAGS)
 sampling_debug_test_CPPFLAGS = $(sampling_test_CPPFLAGS)
 sampling_debug_test_LDFLAGS = $(sampling_test_LDFLAGS)
-sampling_debug_test_LDADD = libtcmalloc_debug.la
+sampling_debug_test_LDADD = libtcmalloc_debug.la $(REGEX_LIBS)
 
 endif WITH_HEAP_PROFILER_OR_CHECKER
 
@@ -990,9 +996,11 @@ $(top_distdir)/ChangeLog:
 
 EXTRA_DIST = $(SCRIPTS) \
              src/windows/get_mangled_names.cc src/windows/override_functions.cc \
+             src/windows/CMakeLists.txt \
              docs/pprof.see_also $(WINDOWS_EXTRA) \
              gperftools.sln vsprojects vendor \
              $(top_srcdir)/src/*h $(top_srcdir)/src/base/*h \
+             $(top_srcdir)/benchmark/*h \
              $(top_srcdir)/src/tests/*h \
              $(top_srcdir)/src/windows/*h $(top_srcdir)/src/gperftools/*h \
              CMakeLists.txt cmake
