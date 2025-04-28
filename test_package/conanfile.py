@@ -1,25 +1,34 @@
-from conans import ConanFile, CMake
+from conan import ConanFile
+from conan.tools.build import cross_building, can_run
+from conan.tools.cmake import CMake, CMakeToolchain, cmake_layout
+from conan.tools.scm import Version
+from conan.tools.files import chdir, copy
+import os
 
 
 class PackageTestConan(ConanFile):
     settings = "os", "compiler", "build_type", "arch"
-    generators = "cmake"
+    generators = "CMakeDeps", "VirtualRunEnv", "VirtualBuildEnv"
+
+    def layout(self):
+        cmake_layout(self)
+
+    def build_requirements(self):
+        self.tool_requires("ninja/[>=1.12.1]")
+
+    def requirements(self):
+        self.requires(self.tested_reference_str)
+
+    def generate(self):
+        tc = CMakeToolchain(self, generator="Ninja")
+        tc.generate()
 
     def build(self):
-        cmake = CMake(self, build_type=self.settings.build_type, msbuild_verbosity="normal")
-        cmake.verbose = True
-        if (cmake.is_multi_configuration):
-            cmake.definitions["CMAKE_BUILD_TYPE"] = cmake.build_type
+        cmake = CMake(self)
         cmake.configure()
         cmake.build()
 
-    def imports(self):
-        self.copy("*.pdb", dst="bin", src="bin")
-        self.copy("*.dll", dst="bin", src="bin")
-        self.copy("*.so*", dst="bin", src="lib")
-
     def test(self):
-        if self.settings.os == "Windows" and self.settings.compiler == "Visual Studio":
-            self.run("ctest --verbose --build-config %s" % self.settings.build_type)
-        else:
-            self.run("ctest --verbose")
+        if can_run(self):
+            with chdir(self, self.folders.build_folder):
+                self.run(f"ctest --output-on-failure -C {self.settings.build_type}", env="conanrun")

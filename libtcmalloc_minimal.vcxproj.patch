@@ -1,7 +1,7 @@
 diff --git a/src/vsprojects/libtcmalloc_minimal/libtcmalloc_minimal.vcxproj b/src/vsprojects/libtcmalloc_minimal/libtcmalloc_minimal.vcxproj
 index f119788..173a538 100644
---- a/src/vsprojects/libtcmalloc_minimal/libtcmalloc_minimal.vcxproj
-+++ b/src/vsprojects/libtcmalloc_minimal/libtcmalloc_minimal.vcxproj
+--- a/vsprojects/libtcmalloc_minimal/libtcmalloc_minimal.vcxproj
++++ b/vsprojects/libtcmalloc_minimal/libtcmalloc_minimal.vcxproj
 @@ -30,7 +30,8 @@
      <UseNativeEnvironment>true</UseNativeEnvironment>
      <ProjectGuid>{55E2B3AE-3CA1-4DB6-97F7-0A044D6F446F}</ProjectGuid>
