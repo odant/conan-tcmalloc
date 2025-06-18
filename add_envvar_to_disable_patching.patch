@@ -2,7 +2,7 @@ diff --git a/src/src/tcmalloc.cc b/src/src/tcmalloc.cc
 index 819d5a9..e2bc0b3 100644
 --- a/src/tcmalloc.cc
 +++ b/src/tcmalloc.cc
-@@ -1180,7 +1180,10 @@ TCMallocGuard::TCMallocGuard() {
+@@ -1137,7 +1137,10 @@ TCMallocGuard::TCMallocGuard() {
    }
  
  #ifndef WIN32_OVERRIDE_ALLOCATORS

@@ -86,7 +86,7 @@ index f119788..173a538 100644
        <OptimizeReferences>true</OptimizeReferences>
        <EnableCOMDATFolding>true</EnableCOMDATFolding>
      </Link>
-@@ -286,6 +304,9 @@
+@@ -284,6 +302,9 @@
      <ClInclude Include="..\..\src\windows\port.h" />
      <ClInclude Include="..\..\src\windows\preamble_patcher.h" />
    </ItemGroup>
