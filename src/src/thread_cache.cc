@@ -47,9 +47,6 @@
 #include "tcmalloc_internal.h"
 #include "thread_cache_ptr.h"
 
-using std::min;
-using std::max;
-
 // Note: this is initialized manually in InitModule to ensure that
 // it's configured at right time
 //
@@ -72,9 +69,9 @@ std::atomic<size_t> ThreadCache::min_per_thread_cache_size_ = kMinThreadCacheSiz
 size_t ThreadCache::overall_thread_cache_size_ = kDefaultOverallThreadCacheSize;
 ssize_t ThreadCache::unclaimed_cache_space_ = kDefaultOverallThreadCacheSize;
 PageHeapAllocator<ThreadCache> threadcache_allocator;
-ThreadCache* ThreadCache::thread_heaps_ = NULL;
-int ThreadCache::thread_heap_count_ = 0;
-ThreadCache* ThreadCache::next_memory_steal_ = NULL;
+ThreadCache* ThreadCache::thread_heaps_;
+int ThreadCache::thread_heap_count_;
+ThreadCache* ThreadCache::next_memory_steal_;
 
 ThreadCache::ThreadCache() {
   ASSERT(Static::pageheap_lock()->IsHeld());
@@ -117,23 +114,23 @@ ThreadCache::~ThreadCache() {
 }
 
 // Remove some objects of class "cl" from central cache and add to thread heap.
-// On success, return the first object for immediate use; otherwise return NULL.
+// On success, return the first object for immediate use; otherwise return nullptr.
 void* ThreadCache::FetchFromCentralCache(uint32_t cl, int32_t byte_size,
                                          void *(*oom_handler)(size_t size)) {
   FreeList* list = &list_[cl];
   ASSERT(list->empty());
   const int batch_size = Static::sizemap()->num_objects_to_move(cl);
 
-  const int num_to_move = min<int>(list->max_length(), batch_size);
+  const int num_to_move = std::min<int>(list->max_length(), batch_size);
   void *start, *end;
   int fetch_count = Static::central_cache()[cl].RemoveRange(
       &start, &end, num_to_move);
 
   if (fetch_count == 0) {
-    ASSERT(start == NULL);
+    ASSERT(start == nullptr);
     return oom_handler(byte_size);
   }
-  ASSERT(start != NULL);
+  ASSERT(start != nullptr);
 
   if (--fetch_count >= 0) {
     size_ += byte_size * fetch_count;
@@ -149,7 +146,7 @@ void* ThreadCache::FetchFromCentralCache(uint32_t cl, int32_t byte_size,
     // Don't let the list get too long.  In 32 bit builds, the length
     // is represented by a 16 bit int, so we need to watch out for
     // integer overflow.
-    int new_length = min<int>(list->max_length() + batch_size,
+    int new_length = std::min<int>(list->max_length() + batch_size,
                               kMaxDynamicFreeListLength);
     // The list's max_length must always be a multiple of batch_size,
     // and kMaxDynamicFreeListLength is not necessarily a multiple
@@ -237,7 +234,7 @@ void ThreadCache::Scavenge() {
       const int batch_size = Static::sizemap()->num_objects_to_move(cl);
       if (list->max_length() > batch_size) {
         list->set_max_length(
-            max<int>(list->max_length() - batch_size, batch_size));
+          std::max<int>(list->max_length() - batch_size, batch_size));
       }
     }
     list->clear_lowwatermark();
@@ -265,8 +262,8 @@ void ThreadCache::IncreaseCacheLimitLocked() {
   for (int i = 0; i < 10;
        ++i, next_memory_steal_ = next_memory_steal_->next_) {
     // Reached the end of the linked list.  Start at the beginning.
-    if (next_memory_steal_ == NULL) {
-      ASSERT(thread_heaps_ != NULL);
+    if (next_memory_steal_ == nullptr) {
+      ASSERT(thread_heaps_ != nullptr);
       next_memory_steal_ = thread_heaps_;
     }
     if (next_memory_steal_ == this ||
@@ -294,7 +291,7 @@ void ThreadCache::InitModule() {
     }
     const char *tcb = TCMallocGetenvSafe("TCMALLOC_MAX_TOTAL_THREAD_CACHE_BYTES");
     if (tcb) {
-      set_overall_thread_cache_size(strtoll(tcb, NULL, 10));
+      set_overall_thread_cache_size(strtoll(tcb, nullptr, 10));
     }
     Static::InitStaticVars();
     threadcache_allocator.Init();
@@ -320,12 +317,12 @@ ThreadCache* ThreadCache::NewHeap() {
   ThreadCache *heap = new (threadcache_allocator.New()) ThreadCache();
 
   heap->next_ = thread_heaps_;
-  heap->prev_ = NULL;
-  if (thread_heaps_ != NULL) {
+  heap->prev_ = nullptr;
+  if (thread_heaps_ != nullptr) {
     thread_heaps_->prev_ = heap;
   } else {
     // This is the only thread heap at the momment.
-    ASSERT(next_memory_steal_ == NULL);
+    ASSERT(next_memory_steal_ == nullptr);
     next_memory_steal_ = heap;
   }
   thread_heaps_ = heap;
@@ -339,13 +336,13 @@ void ThreadCache::DeleteCache(ThreadCache* heap) {
 
   // Remove from linked list
   SpinLockHolder h(Static::pageheap_lock());
-  if (heap->next_ != NULL) heap->next_->prev_ = heap->prev_;
-  if (heap->prev_ != NULL) heap->prev_->next_ = heap->next_;
+  if (heap->next_ != nullptr) heap->next_->prev_ = heap->prev_;
+  if (heap->prev_ != nullptr) heap->prev_->next_ = heap->next_;
   if (thread_heaps_ == heap) thread_heaps_ = heap->next_;
   thread_heap_count_--;
 
   if (next_memory_steal_ == heap) next_memory_steal_ = heap->next_;
-  if (next_memory_steal_ == NULL) next_memory_steal_ = thread_heaps_;
+  if (next_memory_steal_ == nullptr) next_memory_steal_ = thread_heaps_;
   unclaimed_cache_space_ += heap->max_size_;
 
   threadcache_allocator.Delete(heap);
@@ -361,9 +358,9 @@ void ThreadCache::RecomputePerThreadCacheSize() {
   if (space < min_size) space = min_size;
   if (space > kMaxThreadCacheSize) space = kMaxThreadCacheSize;
 
-  double ratio = space / max<double>(1, per_thread_cache_size_);
+  double ratio = space / std::max<double>(1, per_thread_cache_size_);
   size_t claimed = 0;
-  for (ThreadCache* h = thread_heaps_; h != NULL; h = h->next_) {
+  for (ThreadCache* h = thread_heaps_; h != nullptr; h = h->next_) {
     // Increasing the total cache size should not circumvent the
     // slow-start growth of max_size_.
     if (ratio < 1.0) {
@@ -376,7 +373,7 @@ void ThreadCache::RecomputePerThreadCacheSize() {
 }
 
 void ThreadCache::GetThreadStats(uint64_t* total_bytes, uint64_t* class_count) {
-  for (ThreadCache* h = thread_heaps_; h != NULL; h = h->next_) {
+  for (ThreadCache* h = thread_heaps_; h != nullptr; h = h->next_) {
     *total_bytes += h->Size();
     if (class_count) {
       for (int cl = 0; cl < Static::num_size_classes(); ++cl) {

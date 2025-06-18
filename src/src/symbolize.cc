@@ -1,5 +1,5 @@
 // -*- Mode: C++; c-basic-offset: 2; indent-tabs-mode: nil -*-
-// Copyright (c) 2009, Google Inc.
+// Copyright (c) 2024, gperftools Contributors
 // All rights reserved.
 //
 // Redistribution and use in source and binary forms, with or without
@@ -27,315 +27,168 @@
 // THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-
-// ---
-// Author: Craig Silverstein
-//
-// This forks out to pprof to do the actual symbolizing.  We might
-// be better off writing our own in C++.
-
 #include "config.h"
+
 #include "symbolize.h"
+
+#include <stddef.h>
+#include <stdio.h>
 #include <stdlib.h>
-#ifdef HAVE_UNISTD_H
-#include <unistd.h>   // for write()
-#endif
-#ifdef HAVE_SYS_SOCKET_H
-#include <sys/socket.h>   // for socketpair() -- needed by Symbolize
-#endif
-#ifdef HAVE_SYS_WAIT_H
-#include <sys/wait.h>   // for wait() -- needed by Symbolize
-#endif
-#ifdef HAVE_POLL_H
-#include <poll.h>
-#endif
-#ifdef __MACH__
-#include <mach-o/dyld.h>   // for GetProgramInvocationName()
-#include <limits.h>        // for PATH_MAX
-#endif
-#if defined(__CYGWIN__) || defined(__CYGWIN32__)
-#include <io.h>            // for get_osfhandle()
-#endif
-#include <string>
-#include "base/commandlineflags.h"
-#include "base/logging.h"
-#include "base/sysinfo.h"
-#include "base/proc_maps_iterator.h"
-#if defined(__FreeBSD__)
-#include <sys/sysctl.h>
+
+#if HAVE_CXA_DEMANGLE
+#include <cxxabi.h>
 #endif
 
-using std::string;
+#include "libbacktrace_api.h"
 
-// pprof may be used after destructors are
-// called (since that's when leak-checking is done), so we make
-// a more-permanent copy that won't ever get destroyed.
-static char* get_pprof_path() {
-  static char* result = ([] () {
-      string pprof_string = EnvToString("PPROF_PATH", "pprof-symbolize");
-      return strdup(pprof_string.c_str());
-    })();
+namespace tcmalloc {
 
-  return result;
-}
+class SymbolizePrinter {
+public:
+  SymbolizePrinter(backtrace_state* state, FunctionRef<void(const SymbolizeOutcome& outcome)> outcome_callback)
+    : state_(state), outcome_callback_{outcome_callback} {}
 
-namespace {
-
-#ifndef _WIN32
-inline // NOTE: inline makes us avoid unused function warning
-const char* readlink_strdup(const char* path) {
-  int sz = 1024;
-  char* retval = nullptr;
-  for (;;) {
-    if (INT_MAX / 2 <= sz) {
-      free(retval);
-      retval = nullptr;
-      break;
+  void OnePC(uintptr_t pc) {
+    if (!state_) {
+      DemangleAndPrint(pc, nullptr, 0, nullptr, 0);
+      return;
     }
-    sz *= 2;
-    retval = static_cast<char*>(realloc(retval, sz));
-    int rc = readlink(path, retval, sz);
-    if (rc < 0) {
-      perror("GetProgramInvocationName:readlink");
-      free(retval);
-      retval = nullptr;
-      break;
+
+    pc_ = pc;
+    want_syminfo_ = false;
+    tcmalloc_backtrace_pcinfo(state_, pc,
+                              &pcinfo_success,
+                              &pcinfo_error,
+                              this);
+    if (want_syminfo_) {
+      tcmalloc_backtrace_syminfo(state_, pc,
+                                 &syminfo_success,
+                                 &syminfo_error,
+                                 this);
     }
-    if (rc < sz) {
-      retval[rc] = 0;
-      break;
+  }
+
+  static int pcinfo_success(void* data, uintptr_t pc, const char* filename, int lineno, const char* function) {
+    auto printer = static_cast<SymbolizePrinter*>(data);
+    if (function == nullptr) {
+      printer->want_syminfo_ = true;
+      return 1;
     }
-    // repeat if readlink may have truncated it's output
-  }
-  return retval;
-}
-#endif  // _WIN32
 
-}  // namespace
+    printer->DemangleAndPrint(pc, filename, lineno, function, 0);
 
-// Returns NULL if we're on an OS where we can't get the invocation name.
-// Using a static var is ok because we're not called from a thread.
-static const char* GetProgramInvocationName() {
-#if defined(__linux__) || defined(__NetBSD__)
-  // Those systems have functional procfs. And we can simply readlink
-  // /proc/self/exe.
-  static const char* argv0 = readlink_strdup("/proc/self/exe");
-  return argv0;
-#elif defined(__sun__)
-  static const char* argv0 = readlink_strdup("/proc/self/path/a.out");
-  return argv0;
-#elif defined(HAVE_PROGRAM_INVOCATION_NAME)
-#ifdef __UCLIBC__
-  extern const char* program_invocation_name; // uclibc provides this
-#else
-  extern char* program_invocation_name;  // gcc provides this
-#endif
-  return program_invocation_name;
-#elif defined(__MACH__)
-  // We don't want to allocate memory for this since we may be
-  // calculating it when memory is corrupted.
-  static char program_invocation_name[PATH_MAX];
-  if (program_invocation_name[0] == '\0') {  // first time calculating
-    uint32_t length = sizeof(program_invocation_name);
-    if (_NSGetExecutablePath(program_invocation_name, &length))
-      return NULL;
-  }
-  return program_invocation_name;
-#elif defined(__FreeBSD__)
-  static char program_invocation_name[PATH_MAX];
-  size_t len = sizeof(program_invocation_name);
-  static const int name[4] = { CTL_KERN, KERN_PROC, KERN_PROC_PATHNAME, -1 };
-  if (!sysctl(name, 4, program_invocation_name, &len, NULL, 0))
-    return program_invocation_name;
-  return NULL;
-#else
-  return nullptr; // figure out a way to get argv[0]
-#endif
-}
-
-// Prints an error message when you can't run Symbolize().
-static void PrintError(const char* reason) {
-  RAW_LOG(ERROR,
-          "*** WARNING: Cannot convert addresses to symbols in output below.\n"
-          "*** Reason: %s\n"
-          "*** If you cannot fix this, try running pprof directly.\n",
-          reason);
-}
-
-void SymbolTable::Add(const void* addr) {
-  symbolization_table_[addr] = "";
-}
-
-const char* SymbolTable::GetSymbol(const void* addr) {
-  return symbolization_table_[addr];
-}
-
-// Updates symbolization_table with the pointers to symbol names corresponding
-// to its keys. The symbol names are stored in out, which is allocated and
-// freed by the caller of this routine.
-// Note that the forking/etc is not thread-safe or re-entrant.  That's
-// ok for the purpose we need -- reporting leaks detected by heap-checker
-// -- but be careful if you decide to use this routine for other purposes.
-// Returns number of symbols read on error.  If can't symbolize, returns 0
-// and emits an error message about why.
-int SymbolTable::Symbolize() {
-#if !defined(HAVE_UNISTD_H)  || !defined(HAVE_SYS_SOCKET_H) || !defined(HAVE_SYS_WAIT_H)
-  PrintError("Perftools does not know how to call a sub-process on this O/S");
-  return 0;
-#else
-  const char* argv0 = GetProgramInvocationName();
-  if (argv0 == NULL) {  // can't call symbolize if we can't figure out our name
-    PrintError("Cannot figure out the name of this executable (argv0)");
-    return 0;
-  }
-  if (access(get_pprof_path(), R_OK) != 0) {
-    PrintError("Cannot find 'pprof' (is PPROF_PATH set correctly?)");
     return 0;
   }
 
-  // All this work is to do two-way communication.  ugh.
-  int *child_in = NULL;   // file descriptors
-  int *child_out = NULL;  // for now, we don't worry about child_err
-  int child_fds[5][2];    // socketpair may be called up to five times below
+  static void pcinfo_error(void* data, const char* msg, int errnum) {
+    fprintf(stderr, "symbolization step failed (errnum=%d): %s\n", errnum, msg);
 
-  // The client program may close its stdin and/or stdout and/or stderr
-  // thus allowing socketpair to reuse file descriptors 0, 1 or 2.
-  // In this case the communication between the forked processes may be broken
-  // if either the parent or the child tries to close or duplicate these
-  // descriptors. The loop below produces two pairs of file descriptors, each
-  // greater than 2 (stderr).
-  for (int i = 0; i < 5; i++) {
-    if (socketpair(AF_UNIX, SOCK_STREAM, 0, child_fds[i]) == -1) {
-      for (int j = 0; j < i; j++) {
-        close(child_fds[j][0]);
-        close(child_fds[j][1]);
-        PrintError("Cannot create a socket pair");
-      }
-      return 0;
-    } else {
-      if ((child_fds[i][0] > 2) && (child_fds[i][1] > 2)) {
-        if (child_in == NULL) {
-          child_in = child_fds[i];
-        } else {
-          child_out = child_fds[i];
-          for (int j = 0; j < i; j++) {
-            if (child_fds[j] == child_in) continue;
-            close(child_fds[j][0]);
-            close(child_fds[j][1]);
-          }
-          break;
-        }
-      }
-    }
+    auto printer = static_cast<SymbolizePrinter*>(data);
+    printer->want_syminfo_ = true;
   }
 
-  switch (fork()) {
-    case -1: {  // error
-      close(child_in[0]);
-      close(child_in[1]);
-      close(child_out[0]);
-      close(child_out[1]);
-      PrintError("Unknown error calling fork()");
-      return 0;
-    }
-    case 0: {  // child
-      close(child_in[1]);   // child uses the 0's, parent uses the 1's
-      close(child_out[1]);  // child uses the 0's, parent uses the 1's
-      close(0);
-      close(1);
-      if (dup2(child_in[0], 0) == -1) _exit(1);
-      if (dup2(child_out[0], 1) == -1) _exit(2);
-      // Unset vars that might cause trouble when we fork
-      unsetenv("CPUPROFILE");
-      unsetenv("HEAPPROFILE");
-      unsetenv("HEAPCHECK");
-      unsetenv("PERFTOOLS_VERBOSE");
-      execlp(get_pprof_path(), get_pprof_path(),
-             "--symbols", argv0, NULL);
-      _exit(3);  // if execvp fails, it's bad news for us
-    }
-    default: {  // parent
-      close(child_in[0]);   // child uses the 0's, parent uses the 1's
-      close(child_out[0]);  // child uses the 0's, parent uses the 1's
-#ifdef HAVE_POLL_H
-      // Waiting for 1ms seems to give the OS time to notice any errors.
-      poll(0, 0, 1);
-      // For maximum safety, we check to make sure the execlp
-      // succeeded before trying to write.  (Otherwise we'll get a
-      // SIGPIPE.)  For systems without poll.h, we'll just skip this
-      // check, and trust that the user set PPROF_PATH correctly!
-      struct pollfd pfd = { child_in[1], POLLOUT, 0 };
-      if (!poll(&pfd, 1, 0) || !(pfd.revents & POLLOUT) ||
-          (pfd.revents & (POLLHUP|POLLERR))) {
-        PrintError("Cannot run 'pprof' (is PPROF_PATH set correctly?)");
-        return 0;
-      }
-#endif
-#if defined(__CYGWIN__) || defined(__CYGWIN32__)
-      // On cygwin, DumpProcSelfMaps() takes a HANDLE, not an fd.  Convert.
-      const HANDLE symbols_handle = (HANDLE) get_osfhandle(child_in[1]);
-      tcmalloc::SaveProcSelfMapsToRawFD(symbols_handle);
-#else
-      tcmalloc::SaveProcSelfMapsToRawFD(child_in[1]); // what pprof expects on stdin
-#endif
-
-      // Allocate 24 bytes = ("0x" + 8 bytes + "\n" + overhead) for each
-      // address to feed to pprof.
-      const int kOutBufSize = 24 * symbolization_table_.size();
-      char *pprof_buffer = new char[kOutBufSize];
-      int written = 0;
-      for (SymbolMap::const_iterator iter = symbolization_table_.begin();
-           iter != symbolization_table_.end(); ++iter) {
-        written += snprintf(pprof_buffer + written, kOutBufSize - written,
-                 // pprof expects format to be 0xXXXXXX
-                 "0x%" PRIxPTR "\n", reinterpret_cast<uintptr_t>(iter->first));
-      }
-      auto unused = write(child_in[1], pprof_buffer, strlen(pprof_buffer));
-      (void)unused;
-      close(child_in[1]);             // that's all we need to write
-      delete[] pprof_buffer;
-
-      const int kSymbolBufferSize = kSymbolSize * symbolization_table_.size();
-      int total_bytes_read = 0;
-      delete[] symbol_buffer_;
-      symbol_buffer_ = new char[kSymbolBufferSize];
-      memset(symbol_buffer_, '\0', kSymbolBufferSize);
-      while (1) {
-        int bytes_read = read(child_out[1], symbol_buffer_ + total_bytes_read,
-                              kSymbolBufferSize - total_bytes_read);
-        if (bytes_read < 0) {
-          close(child_out[1]);
-          PrintError("Cannot read data from pprof");
-          return 0;
-        } else if (bytes_read == 0) {
-          close(child_out[1]);
-          wait(NULL);
-          break;
-        } else {
-          total_bytes_read += bytes_read;
-        }
-      }
-      // We have successfully read the output of pprof into out.  Make sure
-      // the last symbol is full (we can tell because it ends with a \n).
-      if (total_bytes_read == 0 || symbol_buffer_[total_bytes_read - 1] != '\n')
-        return 0;
-      // make the symbolization_table_ values point to the output vector
-      SymbolMap::iterator fill = symbolization_table_.begin();
-      int num_symbols = 0;
-      const char *current_name = symbol_buffer_;
-      for (int i = 0; i < total_bytes_read; i++) {
-        if (symbol_buffer_[i] == '\n') {
-          fill->second = current_name;
-          symbol_buffer_[i] = '\0';
-          current_name = symbol_buffer_ + i + 1;
-          fill++;
-          num_symbols++;
-        }
-      }
-      return num_symbols;
-    }
+  static void syminfo_success(void* data, uintptr_t pc, const char* symname, uintptr_t symval, uintptr_t symsize) {
+    static_cast<SymbolizePrinter*>(data)->DemangleAndPrint(pc, nullptr, 0, symname, symval);
   }
-  PrintError("Unkown error (should never occur!)");
-  return 0;  // shouldn't be reachable
+
+  static void syminfo_error(void* data, const char* msg, int errnum) {
+    fprintf(stderr, "symbolization syminfo step failed (errnum=%d): %s\n", errnum, msg);
+    auto printer = static_cast<SymbolizePrinter*>(data);
+    printer->DemangleAndPrint(printer->pc_, nullptr, 0, nullptr, 0);
+  }
+
+  void DemangleAndPrint(uintptr_t pc, const char* filename, int lineno, const char* function, uintptr_t symval) {
+    char* demangled = nullptr;
+
+#if HAVE_CXA_DEMANGLE
+    size_t length;
+    int status = -1;
+    if (function != nullptr) {
+      demangled = __cxxabiv1::__cxa_demangle(function, nullptr, &length, &status);
+      if (status != 0) {
+        free(demangled);
+        demangled = nullptr;
+      }
+    }
 #endif
+
+    SymbolizeOutcome outcome;
+    outcome.pc = pc;
+    outcome.function = demangled ? demangled : function;
+    outcome.original_function = function;
+    outcome.filename = filename;
+    outcome.lineno = lineno;
+    outcome.symval = symval;
+
+    outcome_callback_(outcome);
+
+    free(demangled);
+  }
+
+private:
+  backtrace_state* const state_;
+  FunctionRef<void(const SymbolizeOutcome&)> const outcome_callback_;
+
+  uintptr_t pc_{};
+  bool want_syminfo_;
+};
+
+SymbolizerAPI::SymbolizerAPI(FunctionRef<void(const SymbolizeOutcome& outcome)> *callback)
+  : callback_(callback),
+    // note, we create fresh un-threaded backtrace state which we
+    // "dispose" at the end. This is contrary to libbacktrace's normal
+    // recommendations.
+    state_(tcmalloc_backtrace_create_state(nullptr, /*threaded = */0, nullptr, nullptr)) {}
+
+void SymbolizerAPI::Add(uintptr_t addr) const {
+  SymbolizePrinter{state_, *callback_}.OnePC(addr);
 }
+
+SymbolizerAPI::~SymbolizerAPI() {
+  tcmalloc_backtrace_dispose_state(state_);
+}
+
+void DumpStackTraceToStderr(void * const *stack, int stack_depth,
+                            bool want_symbolize, std::string_view line_prefix) {
+  if (!want_symbolize) {
+    for (int i = 0; i < stack_depth; i++) {
+      fprintf(stderr,"%.*s%p\n",
+              (int)line_prefix.size(), line_prefix.data(),
+              stack[i]);
+    }
+    return;
+  }
+
+  SymbolizerAPI::With(
+    [&] (const SymbolizerAPI& api) {
+      for (int i = 0; i < stack_depth; i++) {
+        api.Add(reinterpret_cast<uintptr_t>(stack[i]) - 1);
+      }
+    },
+    [&] (const SymbolizeOutcome& o) {
+      if (o.filename != nullptr) {
+        // We assume that function name is not blank in this case.
+        fprintf(stderr, "%.*s%p %s %s:%d\n",
+                (int)line_prefix.size(), line_prefix.data(),
+                reinterpret_cast<void*>(o.pc),
+                o.function,
+                o.filename, o.lineno);
+      } else if (o.function == nullptr) {
+        fprintf(stderr, "%.*s%p\n",
+                (int)line_prefix.size(), line_prefix.data(),
+                reinterpret_cast<void*>(o.pc));
+      } else if (o.symval != 0) {
+        fprintf(stderr, "%.*s%p %s + %zu\n",
+                (int)line_prefix.size(), line_prefix.data(),
+                reinterpret_cast<void*>(o.pc),
+                o.function, o.pc - o.symval);
+      } else {
+        fprintf(stderr, "%.*s%p %s\n",
+                (int)line_prefix.size(), line_prefix.data(),
+                reinterpret_cast<void*>(o.pc),
+                o.function);
+      }
+    });
+}
+
+}  // namespace tcmalloc

@@ -34,10 +34,6 @@
    don't. */
 /* #undef HAVE_DECL_BACKTRACE */
 
-/* Define to 1 if you have the declaration of `cfree', and to 0 if you don't.
-   */
-#define HAVE_DECL_CFREE 0
-
 /* Define to 1 if you have the declaration of `memalign', and to 0 if you
    don't. */
 #define HAVE_DECL_MEMALIGN 0
@@ -92,9 +88,6 @@
 /* Define to 1 if you have a working `mmap' system call. */
 /* #undef HAVE_MMAP */
 
-/* Define to 1 if you have the <poll.h> header file. */
-/* #undef HAVE_POLL_H */
-
 /* define if libc has program_invocation_name */
 /* #undef HAVE_PROGRAM_INVOCATION_NAME */
 
@@ -136,9 +129,6 @@
 
 /* Whether <unwind.h> contains _Unwind_Backtrace */
 /* #undef HAVE_UNWIND_BACKTRACE */
-
-/* Define to 1 if you have the <unwind.h> header file. */
-/* #undef HAVE_UNWIND_H */
 
 /* define if your compiler has __attribute__ */
 /* #undef HAVE___ATTRIBUTE__ */

@@ -103,7 +103,7 @@ bool ProfileData::Start(const char* fname,
     return false;
   }
 
-  start_time_ = time(NULL);
+  start_time_ = time(nullptr);
   fname_ = strdup(fname);
 
   // Reset counters
@@ -210,7 +210,7 @@ void ProfileData::GetCurrentState(State* state) const {
     state->start_time = start_time_;
     state->samples_gathered = count_;
     int buf_size = sizeof(state->profile_name);
-    strncpy(state->profile_name, fname_, buf_size);
+    strncpy(state->profile_name, fname_ ? fname_ : "", buf_size);
     state->profile_name[buf_size-1] = '\0';
   } else {
     state->enabled = false;

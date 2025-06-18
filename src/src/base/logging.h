@@ -94,10 +94,8 @@ DECLARE_int32(verbose);
 
 // This is like RAW_CHECK, but only in debug-mode
 #ifdef NDEBUG
-enum { DEBUG_MODE = 0 };
 #define RAW_DCHECK(condition, message)
 #else
-enum { DEBUG_MODE = 1 };
 #define RAW_DCHECK(condition, message)  RAW_CHECK(condition, message)
 #endif
 
@@ -118,9 +116,9 @@ enum { DEBUG_MODE = 1 };
 // Helper macro for binary operators; prints the two values on error
 // Don't use this macro directly in your code, use CHECK_EQ et al below
 
-// WARNING: These don't compile correctly if one of the arguments is a pointer
-// and the other is NULL. To work around this, simply static_cast NULL to the
-// type of the desired pointer.
+// WARNING: These don't compile correctly if one of the arguments is a
+// pointer and the other is nullptr. To work around this, simply
+// static_cast nullptr to the type of the desired pointer.
 
 // TODO(jandrews): Also print the values in case of failure.  Requires some
 // sort of type-sensitive ToString() function.

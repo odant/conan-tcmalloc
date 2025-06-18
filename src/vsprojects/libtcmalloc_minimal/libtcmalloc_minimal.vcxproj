@@ -220,7 +220,6 @@
     <ClCompile Include="..\..\src\stacktrace.cc" />
     <ClCompile Include="..\..\src\stack_trace_table.cc" />
     <ClCompile Include="..\..\src\static_vars.cc" />
-    <ClCompile Include="..\..\src\symbolize.cc" />
     <ClCompile Include="..\..\src\thread_cache.cc" />
     <ClCompile Include="..\..\src\thread_cache_ptr.cc" />
     <ClCompile Include="..\..\src\windows\ia32_modrm_map.cc" />
@@ -275,7 +274,6 @@
     <ClInclude Include="..\..\src\stacktrace_win32-inl.h" />
     <ClInclude Include="..\..\src\stack_trace_table.h" />
     <ClInclude Include="..\..\src\static_vars.h" />
-    <ClInclude Include="..\..\src\symbolize.h" />
     <ClInclude Include="..\..\src\system-alloc.h" />
     <ClInclude Include="..\..\src\tcmalloc_internal.h" />
     <ClInclude Include="..\..\src\thread_cache.h" />

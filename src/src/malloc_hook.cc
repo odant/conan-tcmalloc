@@ -59,81 +59,6 @@
 # define __THROW   // __THROW is just an optimization, so ok to make it ""
 #endif
 
-using std::copy;
-
-
-// Declaration of default weak initialization function, that can be overridden
-// by linking-in a strong definition (as heap-checker.cc does).  This is
-// extern "C" so that it doesn't trigger gold's --detect-odr-violations warning,
-// which only looks at C++ symbols.
-//
-// This function is declared here as weak, and defined later, rather than a more
-// straightforward simple weak definition, as a workround for an icc compiler
-// issue ((Intel reference 290819).  This issue causes icc to resolve weak
-// symbols too early, at compile rather than link time.  By declaring it (weak)
-// here, then defining it below after its use, we can avoid the problem.
-extern "C" {
-  ATTRIBUTE_WEAK int MallocHook_InitAtFirstAllocation_HeapLeakChecker() {
-    return 0;
-  }
-}
-
-namespace {
-
-bool RemoveInitialHooksAndCallInitializers();  // below.
-
-// These hooks are installed in MallocHook as the only initial hooks.  The first
-// hook that is called will run RemoveInitialHooksAndCallInitializers (see the
-// definition below) and then redispatch to any malloc hooks installed by
-// RemoveInitialHooksAndCallInitializers.
-//
-// Note(llib): there is a possibility of a race in the event that there are
-// multiple threads running before the first allocation.  This is pretty
-// difficult to achieve, but if it is then multiple threads may concurrently do
-// allocations.  The first caller will call
-// RemoveInitialHooksAndCallInitializers via one of the initial hooks.  A
-// concurrent allocation may, depending on timing either:
-// * still have its initial malloc hook installed, run that and block on waiting
-//   for the first caller to finish its call to
-//   RemoveInitialHooksAndCallInitializers, and proceed normally.
-// * occur some time during the RemoveInitialHooksAndCallInitializers call, at
-//   which point there could be no initial hooks and the subsequent hooks that
-//   are about to be set up by RemoveInitialHooksAndCallInitializers haven't
-//   been installed yet.  I think the worst we can get is that some allocations
-//   will not get reported to some hooks set by the initializers called from
-//   RemoveInitialHooksAndCallInitializers.
-//
-// Note, RemoveInitialHooksAndCallInitializers returns false if
-// MallocHook_InitAtFirstAllocation_HeapLeakChecker was already called
-// (i.e. through mmap hooks). And true otherwise (i.e. we're first to
-// call it). In that former case (return of false), we assume that
-// heap checker already installed it's hook, so we don't re-execute
-// new hook.
-void InitialNewHook(const void* ptr, size_t size) {
-  if (RemoveInitialHooksAndCallInitializers()) {
-    MallocHook::InvokeNewHook(ptr, size);
-  }
-}
-
-// This function is called at most once by one of the above initial malloc
-// hooks.  It removes all initial hooks and initializes all other clients that
-// want to get control at the very first memory allocation.  The initializers
-// may assume that the initial malloc hooks have been removed.  The initializers
-// may set up malloc hooks and allocate memory.
-bool RemoveInitialHooksAndCallInitializers() {
-  static tcmalloc::TrivialOnce once;
-  once.RunOnce([] () {
-    RAW_CHECK(MallocHook::RemoveNewHook(&InitialNewHook), "");
-  });
-
-  // HeapLeakChecker is currently the only module that needs to get control on
-  // the first memory allocation, but one can add other modules by following the
-  // same weak/strong function pattern.
-  return (MallocHook_InitAtFirstAllocation_HeapLeakChecker() != 0);
-}
-
-}  // namespace
-
 namespace base { namespace internal {
 
 // This lock is shared between all implementations of HookList::Add & Remove.
@@ -228,7 +153,7 @@ T HookList<T>::ExchangeSingular(T value) {
 // are instantiated.
 template struct HookList<MallocHook::NewHook>;
 
-HookList<MallocHook::NewHook> new_hooks_{InitialNewHook};
+HookList<MallocHook::NewHook> new_hooks_;
 HookList<MallocHook::DeleteHook> delete_hooks_;
 
 } }  // namespace base::internal
@@ -278,81 +203,31 @@ MallocHook_DeleteHook MallocHook_SetDeleteHook(MallocHook_DeleteHook hook) {
   return delete_hooks_.ExchangeSingular(hook);
 }
 
-// Note: embedding the function calls inside the traversal of HookList would be
-// very confusing, as it is legal for a hook to remove itself and add other
-// hooks.  Doing traversal first, and then calling the hooks ensures we only
-// call the hooks registered at the start.
-#define INVOKE_HOOKS(HookType, hook_list, args) do {                    \
-    HookType hooks[kHookListMaxValues];                                 \
-    int num_hooks = hook_list.Traverse(hooks, kHookListMaxValues);      \
-    for (int i = 0; i < num_hooks; ++i) {                               \
-      (*hooks[i])args;                                                  \
-    }                                                                   \
-  } while (0)
+namespace tcmalloc {
 
-// There should only be one replacement. Return the result of the first
-// one, or false if there is none.
-#define INVOKE_REPLACEMENT(HookType, hook_list, args) do {              \
-    HookType hooks[kHookListMaxValues];                                 \
-    int num_hooks = hook_list.Traverse(hooks, kHookListMaxValues);      \
-    return (num_hooks > 0 && (*hooks[0])args);                          \
-  } while (0)
-
-
-void MallocHook::InvokeNewHookSlow(const void* p, size_t s) {
-  if (tcmalloc::IsEmergencyPtr(p)) {
+void InvokeNewHookSlow(const void* p, size_t s) {
+  if (IsEmergencyPtr(p)) {
     return;
   }
-  INVOKE_HOOKS(NewHook, new_hooks_, (p, s));
+  MallocHook::NewHook hooks[kHookListMaxValues];
+  int num_hooks = base::internal::new_hooks_.Traverse(hooks, kHookListMaxValues);
+  for (int i = 0; i < num_hooks; i++) {
+    hooks[i](p, s);
+  }
 }
 
-void MallocHook::InvokeDeleteHookSlow(const void* p) {
-  if (tcmalloc::IsEmergencyPtr(p)) {
+void InvokeDeleteHookSlow(const void* p) {
+  if (IsEmergencyPtr(p)) {
     return;
   }
-  INVOKE_HOOKS(DeleteHook, delete_hooks_, (p));
-}
-
-#undef INVOKE_HOOKS
-
-#if !defined(NO_TCMALLOC_SAMPLES) && HAVE_ATTRIBUTE_SECTION_START
-
-DEFINE_ATTRIBUTE_SECTION_VARS(google_malloc);
-DECLARE_ATTRIBUTE_SECTION_VARS(google_malloc);
-  // actual functions are in debugallocation.cc or tcmalloc.cc
-
-#define ADDR_IN_ATTRIBUTE_SECTION(addr, name) \
-  (reinterpret_cast<uintptr_t>(ATTRIBUTE_SECTION_START(name)) <= \
-     reinterpret_cast<uintptr_t>(addr) && \
-   reinterpret_cast<uintptr_t>(addr) < \
-     reinterpret_cast<uintptr_t>(ATTRIBUTE_SECTION_STOP(name)))
-
-// Return true iff 'caller' is a return address within a function
-// that calls one of our hooks via MallocHook:Invoke*.
-// A helper for GetCallerStackTrace.
-static inline bool InHookCaller(const void* caller) {
-  return ADDR_IN_ATTRIBUTE_SECTION(caller, google_malloc);
-  // We can use one section for everything except tcmalloc_or_debug
-  // due to its special linkage mode, which prevents merging of the sections.
-}
-
-#undef ADDR_IN_ATTRIBUTE_SECTION
-
-static bool checked_sections = false;
-
-static inline void CheckInHookCaller() {
-  if (!checked_sections) {
-    INIT_ATTRIBUTE_SECTION_VARS(google_malloc);
-    if (ATTRIBUTE_SECTION_START(google_malloc) ==
-        ATTRIBUTE_SECTION_STOP(google_malloc)) {
-      RAW_LOG(ERROR, "google_malloc section is missing, "
-                     "thus InHookCaller is broken!");
-    }
-    checked_sections = true;
+  MallocHook::DeleteHook hooks[kHookListMaxValues];
+  int num_hooks = base::internal::delete_hooks_.Traverse(hooks, kHookListMaxValues);
+  for (int i = 0; i < num_hooks; i++) {
+    hooks[i](p);
   }
 }
 
-#endif // !NO_TCMALLOC_SAMPLES
+}  // namespace tcmalloc
 
 // We can improve behavior/compactness of this function
 // if we pass a generic test function (with a generic arg)
@@ -361,58 +236,18 @@ extern "C" int MallocHook_GetCallerStackTrace(void** result, int max_depth,
                                               int skip_count) {
 #if defined(NO_TCMALLOC_SAMPLES)
   return 0;
-#elif !defined(HAVE_ATTRIBUTE_SECTION_START)
+#else
+  if (max_depth < 1) {
+    return 0;
+  }
   // Fall back to GetStackTrace and good old but fragile frame skip counts.
   // Note: this path is inaccurate when a hook is not called directly by an
   // allocation function but is daisy-chained through another hook,
   // search for MallocHook::(Get|Set|Invoke)* to find such cases.
-  return tcmalloc::GrabBacktrace(result, max_depth, skip_count + int(DEBUG_MODE));
-  // due to -foptimize-sibling-calls in opt mode
-  // there's no need for extra frame skip here then
-#else
-  CheckInHookCaller();
-  // MallocHook caller determination via InHookCaller works, use it:
-  static const int kMaxSkip = 32 + 6 + 3;
-    // Constant tuned to do just one GetStackTrace call below in practice
-    // and not get many frames that we don't actually need:
-    // currently max passsed max_depth is 32,
-    // max passed/needed skip_count is 6
-    // and 3 is to account for some hook daisy chaining.
-  static const int kStackSize = kMaxSkip + 1;
-  void* stack[kStackSize];
-  int depth = tcmalloc::GrabBacktrace(stack, kStackSize, 1);  // skip this function frame
-  if (depth == 0)   // silenty propagate cases when GetStackTrace does not work
-    return 0;
-  for (int i = 0; i < depth; ++i) {  // stack[0] is our immediate caller
-    if (InHookCaller(stack[i])) {
-      // fast-path to slow-path calls may be implemented by compiler
-      // as non-tail calls. Causing two functions on stack trace to be
-      // inside google_malloc. In such case we're skipping to
-      // outermost such frame since this is where malloc stack frames
-      // really start.
-      while (i + 1 < depth && InHookCaller(stack[i+1])) {
-        i++;
-      }
-      RAW_VLOG(10, "Found hooked allocator at %d: %p <- %p",
-                   i, stack[i], stack[i+1]);
-      i += 1;  // skip hook caller frame
-      depth -= i;  // correct depth
-      if (depth > max_depth) depth = max_depth;
-      copy(stack + i, stack + i + depth, result);
-      if (depth < max_depth  &&  depth + i == kStackSize) {
-        // get frames for the missing depth
-        depth +=
-          tcmalloc::GrabBacktrace(result + depth, max_depth - depth, 1 + kStackSize);
-      }
-      return depth;
-    }
-  }
-  RAW_LOG(WARNING, "Hooked allocator frame not found, returning empty trace");
-    // If this happens try increasing kMaxSkip
-    // or else something must be wrong with InHookCaller,
-    // e.g. for every section used in InHookCaller
-    // all functions in that section must be inside the same library.
-  return 0;
+  int retval = tcmalloc::GrabBacktrace(result, max_depth, skip_count);
+  // prevent tail-call above
+  *(void* volatile *)result;
+  return retval;
 #endif
 }
 
@@ -420,9 +255,6 @@ extern "C" int MallocHook_GetCallerStackTrace(void** result, int max_depth,
 // are no op and we keep them only because we have them exposed in
 // headers we ship. So keep them for somewhat formal ABI compat.
 //
-// For non-public API for hooking mapping updates see
-// mmap_hook.h
-
 extern "C"
 int MallocHook_AddPreMmapHook(MallocHook_PreMmapHook hook) {
   return 0;
@@ -542,55 +374,5 @@ MallocHook_PreSbrkHook MallocHook_SetPreSbrkHook(MallocHook_PreSbrkHook hook) {
 extern "C"
 MallocHook_SbrkHook MallocHook_SetSbrkHook(MallocHook_SbrkHook hook) {
   return 0;
-}
-
-void MallocHook::InvokePreMmapHookSlow(const void* start,
-                                       size_t size,
-                                       int protection,
-                                       int flags,
-                                       int fd,
-                                       off_t offset) {
-}
-
-void MallocHook::InvokeMmapHookSlow(const void* result,
-                                    const void* start,
-                                    size_t size,
-                                    int protection,
-                                    int flags,
-                                    int fd,
-                                    off_t offset) {
-}
-
-bool MallocHook::InvokeMmapReplacementSlow(const void* start,
-                                           size_t size,
-                                           int protection,
-                                           int flags,
-                                           int fd,
-                                           off_t offset,
-                                           void** result) {
-  return false;
-}
-
-void MallocHook::InvokeMunmapHookSlow(const void* p, size_t s) {
-}
-
-bool MallocHook::InvokeMunmapReplacementSlow(const void* p,
-                                             size_t s,
-                                             int* result) {
-  return false;
-}
-
-void MallocHook::InvokeMremapHookSlow(const void* result,
-                                      const void* old_addr,
-                                      size_t old_size,
-                                      size_t new_size,
-                                      int flags,
-                                      const void* new_addr) {
-}
-
-void MallocHook::InvokePreSbrkHookSlow(ptrdiff_t increment) {
-}
-
-void MallocHook::InvokeSbrkHookSlow(const void* result, ptrdiff_t increment) {
 }
 

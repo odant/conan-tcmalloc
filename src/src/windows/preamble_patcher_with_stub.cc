@@ -59,12 +59,12 @@ SideStepError PreamblePatcher::RawPatchWithStub(
     unsigned char* preamble_stub,
     unsigned long stub_size,
     unsigned long* bytes_needed) {
-  if ((NULL == target_function) ||
-      (NULL == replacement_function) ||
-      (NULL == preamble_stub)) {
+  if ((nullptr == target_function) ||
+      (nullptr == replacement_function) ||
+      (nullptr == preamble_stub)) {
     SIDESTEP_ASSERT(false &&
                     "Invalid parameters - either pTargetFunction or "
-                    "pReplacementFunction or pPreambleStub were NULL.");
+                    "pReplacementFunction or pPreambleStub were nullptr.");
     return SIDESTEP_INVALID_PARAMETER;
   }
 
@@ -130,6 +130,13 @@ SideStepError PreamblePatcher::RawPatchWithStub(
       }
       required_trampoline_bytes = 13;
     }
+  }
+
+  // skip endbr{32,64} if it is at the
+  // target. https://www.felixcloutier.com/x86/endbr32 and
+  // https://www.felixcloutier.com/x86/endbr64
+  if (target[0] == 0xf3 && target[1] == 0x0f && target[2] == 0x1e && (target[3] == 0xfb || target[3] == 0xfa)) {
+    target += 4;
   }
 
   // Let's disassemble the preamble of the target function to see if we can
@@ -199,7 +206,7 @@ SideStepError PreamblePatcher::RawPatchWithStub(
     preamble_bytes += cur_bytes;
   }
 
-  if (NULL != bytes_needed)
+  if (nullptr != bytes_needed)
     *bytes_needed = stub_bytes + kRequiredStubJumpBytes
         + required_trampoline_bytes;
 

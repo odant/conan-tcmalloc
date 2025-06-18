@@ -44,13 +44,13 @@
 #include "base/spinlock.h"
 #include "base/static_storage.h"
 #include "internal_logging.h"
-#include "mmap_hook.h"
+#include "memmap.h"
 #include "thread_cache_ptr.h"
 
 namespace tcmalloc {
 
-ATTRIBUTE_HIDDEN char *emergency_arena_start;
-ATTRIBUTE_HIDDEN uintptr_t emergency_arena_start_shifted;
+ATTRIBUTE_VISIBILITY_HIDDEN char *emergency_arena_start;
+ATTRIBUTE_VISIBILITY_HIDDEN uintptr_t emergency_arena_start_shifted;
 
 static CACHELINE_ALIGNED SpinLock emergency_malloc_lock;
 static char *emergency_arena_end;
@@ -58,14 +58,14 @@ static LowLevelAlloc::Arena *emergency_arena;
 
 class EmergencyArenaPagesAllocator : public LowLevelAlloc::PagesAllocator {
   ~EmergencyArenaPagesAllocator() {}
-  void *MapPages(size_t size) override {
+  std::pair<void *, size_t> MapPages(size_t size) override {
     char *new_end = emergency_arena_end + size;
     if (new_end > emergency_arena_start + kEmergencyArenaSize) {
       RAW_LOG(FATAL, "Unable to allocate %zu bytes in emergency zone.", size);
     }
     char *rv = emergency_arena_end;
-    emergency_arena_end = new_end;
-    return static_cast<void *>(rv);
+    emergency_arena_end = emergency_arena_start + kEmergencyArenaSize;
+    return {static_cast<void *>(rv), emergency_arena_end - rv};
   }
   void UnMapPages(void *addr, size_t size) override {
     RAW_LOG(FATAL, "UnMapPages is not implemented for emergency arena");
@@ -73,7 +73,7 @@ class EmergencyArenaPagesAllocator : public LowLevelAlloc::PagesAllocator {
 };
 
 static void InitEmergencyMalloc(void) {
-  auto [arena, success] = DirectAnonMMap(false, kEmergencyArenaSize * 2);
+  auto [arena, success] = MapAnonymous(kEmergencyArenaSize * 2);
   CHECK_CONDITION(success);
 
   uintptr_t arena_ptr = reinterpret_cast<uintptr_t>(arena);
@@ -84,55 +84,57 @@ static void InitEmergencyMalloc(void) {
   static StaticStorage<EmergencyArenaPagesAllocator> pages_allocator_place;
   EmergencyArenaPagesAllocator* allocator = pages_allocator_place.Construct();
 
-  emergency_arena = LowLevelAlloc::NewArenaWithCustomAlloc(nullptr, allocator);
+  emergency_arena = LowLevelAlloc::NewArenaWithCustomAlloc(allocator);
 
   emergency_arena_start_shifted = reinterpret_cast<uintptr_t>(emergency_arena_start) >> kEmergencyArenaShift;
 
   uintptr_t head_unmap_size = ptr - arena_ptr;
   CHECK_CONDITION(head_unmap_size < kEmergencyArenaSize);
   if (head_unmap_size != 0) {
-    DirectMUnMap(false, arena, ptr - arena_ptr);
+    // Note, yes, we ignore any potential, but ~impossible
+    // failures. It should be harmless.
+    (void)munmap(arena, ptr - arena_ptr);
   }
 
   uintptr_t tail_unmap_size = kEmergencyArenaSize - head_unmap_size;
   void *tail_start = reinterpret_cast<void *>(arena_ptr + head_unmap_size + kEmergencyArenaSize);
-  DirectMUnMap(false, tail_start, tail_unmap_size);
+  // Failures are ignored. See above.
+  (void)munmap(tail_start, tail_unmap_size);
 }
 
-ATTRIBUTE_HIDDEN void *EmergencyMalloc(size_t size) {
+ATTRIBUTE_VISIBILITY_HIDDEN void *EmergencyMalloc(size_t size) {
   SpinLockHolder l(&emergency_malloc_lock);
 
-  if (emergency_arena_start == NULL) {
+  if (emergency_arena_start == nullptr) {
     InitEmergencyMalloc();
-    CHECK_CONDITION(emergency_arena_start != NULL);
+    CHECK_CONDITION(emergency_arena_start != nullptr);
   }
 
   void *rv = LowLevelAlloc::AllocWithArena(size, emergency_arena);
-  if (rv == NULL) {
+  if (rv == nullptr) {
     errno = ENOMEM;
   }
   return rv;
 }
 
-ATTRIBUTE_HIDDEN void EmergencyFree(void *p) {
+ATTRIBUTE_VISIBILITY_HIDDEN void EmergencyFree(void *p) {
   SpinLockHolder l(&emergency_malloc_lock);
-  if (emergency_arena_start == NULL) {
-    InitEmergencyMalloc();
-    CHECK_CONDITION(emergency_arena_start != NULL);
-    free(p);
-    return;
-  }
   CHECK_CONDITION(emergency_arena_start);
   LowLevelAlloc::Free(p);
 }
 
-ATTRIBUTE_HIDDEN void *EmergencyRealloc(void *_old_ptr, size_t new_size) {
-  if (_old_ptr == NULL) {
+ATTRIBUTE_VISIBILITY_HIDDEN size_t EmergencyAllocatedSize(const void *p) {
+  CHECK_CONDITION(emergency_arena_start);
+  return LowLevelAlloc::UsableSize(p);
+}
+
+ATTRIBUTE_VISIBILITY_HIDDEN void *EmergencyRealloc(void *_old_ptr, size_t new_size) {
+  if (_old_ptr == nullptr) {
     return EmergencyMalloc(new_size);
   }
   if (new_size == 0) {
     EmergencyFree(_old_ptr);
-    return NULL;
+    return nullptr;
   }
   SpinLockHolder l(&emergency_malloc_lock);
   CHECK_CONDITION(emergency_arena_start);
@@ -148,9 +150,9 @@ ATTRIBUTE_HIDDEN void *EmergencyRealloc(void *_old_ptr, size_t new_size) {
   size_t copy_size = (new_size < old_ptr_size) ? new_size : old_ptr_size;
 
   void *new_ptr = LowLevelAlloc::AllocWithArena(new_size, emergency_arena);
-  if (new_ptr == NULL) {
+  if (new_ptr == nullptr) {
     errno = ENOMEM;
-    return NULL;
+    return nullptr;
   }
   memcpy(new_ptr, old_ptr, copy_size);
 

@@ -72,12 +72,32 @@
 #endif
 #include <assert.h>
 
+#ifndef _WIN32
+#include <spawn.h> // for posix_spawn
+#include <sys/wait.h> // for waitpid
+#endif
+
 #include <algorithm>
+#include <functional>
 #include <mutex>
 #include <new>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
+
+#if __linux__ && __x86_64__
+// for fork testing
+#include <errno.h>
+#include <sched.h>
+#include <semaphore.h>
+#include <signal.h>
+#include <sys/syscall.h>
+#include <ucontext.h>
+#include <unistd.h>
+
+#define HAVE_FORK_TESTING_SUPPORT
+#endif // __linux__ && __x86_64__
 
 #include "gperftools/malloc_hook.h"
 #include "gperftools/malloc_extension.h"
@@ -96,6 +116,8 @@
 
 #include "base/logging.h"
 
+
+static bool running_fork_testing;
 
 using tcmalloc::TestingPortal;
 
@@ -139,7 +161,6 @@ constexpr NumericProperty kAggressiveDecommit{"tcmalloc.aggressive_memory_decomm
 // Windows doesn't define pvalloc and a few other obsolete unix
 // functions; nor does it define posix_memalign (which is not obsolete).
 #if defined(_WIN32)
-# define cfree free         // don't bother to try to test these obsolete fns
 # define valloc malloc
 # define pvalloc malloc
 // I'd like to map posix_memalign to _aligned_malloc, but _aligned_malloc
@@ -149,7 +170,7 @@ static bool kOSSupportsMemalign = false;
 static inline void* Memalign(size_t align, size_t size) {
   //LOG(FATAL) << "memalign not supported on windows";
   exit(1);
-  return NULL;
+  return nullptr;
 }
 static inline int PosixMemalign(void** ptr, size_t align, size_t size) {
   //LOG(FATAL) << "posix_memalign not supported on windows";
@@ -164,7 +185,7 @@ static bool kOSSupportsMemalign = false;
 static inline void* Memalign(size_t align, size_t size) {
   //LOG(FATAL) << "memalign not supported on OS X";
   exit(1);
-  return NULL;
+  return nullptr;
 }
 static inline int PosixMemalign(void** ptr, size_t align, size_t size) {
   //LOG(FATAL) << "posix_memalign not supported on OS X";
@@ -200,7 +221,7 @@ struct OOMAbleSysAlloc : public SysAllocator {
 
   void* Alloc(size_t size, size_t* actual_size, size_t alignment) {
     if (simulate_oom) {
-      return NULL;
+      return nullptr;
     }
     return child->Alloc(size, actual_size, alignment);
   }
@@ -366,7 +387,7 @@ class AllocatorState : public TestHarness {
           if (err != 0) {
             CHECK_EQ(err, ENOMEM);
           }
-          return err == 0 ? result : NULL;
+          return err == 0 ? result : nullptr;
         }
       }
     }
@@ -583,6 +604,32 @@ class TesterThread {
   }
 };
 
+TEST(TCMallocTest, Versions) {
+  auto build_version_string = [] (int major, int minor, const char* patch) -> std::string {
+    CHECK(patch[0] == 0 || patch[0] == '.'); // patch version needs to start with dot
+    std::stringstream ss;
+    ss << "gperftools " << major << "." << minor << patch;
+    return ss.str();
+  };
+
+  // We make sure that TC_VERSION_STRING define matches
+  // TC_VERSION_MAJOR, TC_VERSION_MAJOR and TC_VERSION_PATCH (see
+  // tcmalloc.h)
+  std::string expected_version_string = build_version_string(TC_VERSION_MAJOR, TC_VERSION_MINOR, TC_VERSION_PATCH);
+  ASSERT_EQ(expected_version_string, std::string(TC_VERSION_STRING));
+
+  // autoconf's config.h has PACKAGE_VERSION that is taken from configure.ac
+#if defined(PACKAGE_VERSION)
+  // And we make sure that autoconf's idea of version matches what
+  // we've manually put into tcmalloc.h
+  ASSERT_EQ(expected_version_string, std::string("gperftools ") + PACKAGE_VERSION);
+#else
+  // Make sure we're able to exercise line above (we set this
+  // environment variable in test runner)
+  CHECK_EQ(getenv("GPERFTOOLS_ENSURE_PACKAGE_VERSION"), nullptr);
+#endif
+}
+
 TEST(TCMallocTest, ManyThreads) {
   printf("Testing threaded allocation/deallocation (%d threads)\n",
           FLAGS_numthreads);
@@ -609,12 +656,12 @@ TEST(TCMallocTest, ManyThreads) {
 
 static void TryHugeAllocation(size_t s, AllocatorState* rnd) {
   void* p = rnd->alloc(noopt(s));
-  CHECK(p == NULL);   // huge allocation s should fail!
+  CHECK(p == nullptr);   // huge allocation s should fail!
 }
 
 static void TestHugeAllocations(AllocatorState* rnd) {
   // Check that asking for stuff tiny bit smaller than largest possible
-  // size returns NULL.
+  // size returns nullptr.
   for (size_t i = 0; i < 70000; i += rnd->Uniform(20)) {
     TryHugeAllocation(kMaxSize - i, rnd);
   }
@@ -623,9 +670,9 @@ static void TestHugeAllocations(AllocatorState* rnd) {
   if (!TestingPortal::Get()->IsDebuggingMalloc()) {
    // debug allocation takes forever for huge allocs
     for (size_t i = 0; i < 100; i++) {
-      void* p = NULL;
+      void* p = nullptr;
       p = rnd->alloc(kMaxSignedSize + i);
-      if (p) free(p);    // if: free(NULL) is not necessarily defined
+      if (p) free(p);    // if: free(nullptr) is not necessarily defined
       p = rnd->alloc(kMaxSignedSize - i);
       if (p) free(p);
     }
@@ -641,9 +688,9 @@ static void TestHugeAllocations(AllocatorState* rnd) {
 static void TestCalloc(size_t n, size_t s, bool ok) {
   char* p = reinterpret_cast<char*>(noopt(calloc)(n, s));
   if (!ok) {
-    CHECK(p == NULL);  // calloc(n, s) should not succeed
+    CHECK(p == nullptr);  // calloc(n, s) should not succeed
   } else {
-    CHECK(p != NULL);  // calloc(n, s) should succeed
+    CHECK(p != nullptr);  // calloc(n, s) should succeed
     for (int i = 0; i < n*s; i++) {
       CHECK(p[i] == '\0');
     }
@@ -1043,8 +1090,8 @@ TEST(TCMallocTest, AggressiveDecommit) {
 // On MSVC10, in release mode, the optimizer convinces itself
 // g_no_memory is never changed (I guess it doesn't realize OnNoMemory
 // might be called).  Work around this by setting the var volatile.
-volatile bool g_no_memory = false;
-std::new_handler g_old_handler = NULL;
+volatile bool g_no_memory;
+std::new_handler g_old_handler;
 static void OnNoMemory() {
   g_no_memory = true;
   std::set_new_handler(g_old_handler);
@@ -1056,19 +1103,19 @@ TEST(TCMallocTest, SetNewMode) {
   g_old_handler = std::set_new_handler(&OnNoMemory);
   g_no_memory = false;
   void* ret = noopt(malloc(noopt(kTooBig)));
-  EXPECT_EQ(NULL, ret);
+  EXPECT_EQ(nullptr, ret);
   EXPECT_TRUE(g_no_memory);
 
   g_old_handler = std::set_new_handler(&OnNoMemory);
   g_no_memory = false;
   ret = noopt(calloc(1, noopt(kTooBig)));
-  EXPECT_EQ(NULL, ret);
+  EXPECT_EQ(nullptr, ret);
   EXPECT_TRUE(g_no_memory);
 
   g_old_handler = std::set_new_handler(&OnNoMemory);
   g_no_memory = false;
   ret = noopt(realloc(nullptr, noopt(kTooBig)));
-  EXPECT_EQ(NULL, ret);
+  EXPECT_EQ(nullptr, ret);
   EXPECT_TRUE(g_no_memory);
 
   if (kOSSupportsMemalign) {
@@ -1079,14 +1126,14 @@ TEST(TCMallocTest, SetNewMode) {
     g_old_handler = std::set_new_handler(&OnNoMemory);
     g_no_memory = false;
     ret = Memalign(kAlignment, kTooBig);
-    EXPECT_EQ(NULL, ret);
+    EXPECT_EQ(nullptr, ret);
     EXPECT_TRUE(g_no_memory);
 
     g_old_handler = std::set_new_handler(&OnNoMemory);
     g_no_memory = false;
     EXPECT_EQ(ENOMEM,
               PosixMemalign(&ret, kAlignment, kTooBig));
-    EXPECT_EQ(NULL, ret);
+    EXPECT_EQ(nullptr, ret);
     EXPECT_TRUE(g_no_memory);
   }
 
@@ -1098,18 +1145,18 @@ TEST(TCMallocTest, TestErrno) {
   if (kOSSupportsMemalign) {
     errno = 0;
     ret = Memalign(128, kTooBig);
-    EXPECT_EQ(NULL, ret);
+    EXPECT_EQ(nullptr, ret);
     EXPECT_EQ(ENOMEM, errno);
   }
 
   errno = 0;
   ret = noopt(malloc(noopt(kTooBig)));
-  EXPECT_EQ(NULL, ret);
+  EXPECT_EQ(nullptr, ret);
   EXPECT_EQ(ENOMEM, errno);
 
   errno = 0;
   ret = tc_malloc_skip_new_handler(kTooBig);
-  EXPECT_EQ(NULL, ret);
+  EXPECT_EQ(nullptr, ret);
   EXPECT_EQ(ENOMEM, errno);
 }
 
@@ -1206,6 +1253,8 @@ static void test_new_handler() {
 }
 
 TEST(TCMallocTest, NewHandler) {
+  if (running_fork_testing) return;
+
   // debug allocator does internal allocations and crashes when such
   // internal allocation fails. So don't test it.
   if (TestingPortal::Get()->IsDebuggingMalloc()) {
@@ -1321,6 +1370,20 @@ TEST(TCMallocTest, AllTests) {
     free(p1);
     VerifyDeleteHookWasCalled();
 
+    p1 = noopt(malloc)(10);
+    ASSERT_NE(p1, nullptr);
+    VerifyNewHookWasCalled();
+    tc_free_sized(p1, 10);
+    VerifyDeleteHookWasCalled();
+
+    // sadly windows stuff lacks aligned_alloc
+    // (https://learn.microsoft.com/en-us/cpp/standard-library/cstdlib?view=msvc-170#remarks-6)
+    p1 = noopt(tc_memalign)(1, 10);
+    ASSERT_NE(p1, nullptr);
+    VerifyNewHookWasCalled();
+    tc_free_aligned_sized(p1, 1, 10);
+    VerifyDeleteHookWasCalled();
+
     p1 = tc_malloc_skip_new_handler(10);
     ASSERT_NE(p1, nullptr);
     VerifyNewHookWasCalled();
@@ -1337,7 +1400,7 @@ TEST(TCMallocTest, AllTests) {
     ASSERT_NE(p1, nullptr);
     VerifyNewHookWasCalled();
     VerifyDeleteHookWasCalled();
-    cfree(p1);  // synonym for free
+    free(p1);
     VerifyDeleteHookWasCalled();
 
     if (kOSSupportsMemalign) {
@@ -1531,11 +1594,11 @@ TEST(TCMallocTest, AllTests) {
   // Do the memory intensive tests after threads are done, since exhausting
   // the available address space can make pthread_create to fail.
 
-  // Check that huge allocations fail with NULL instead of crashing
+  // Check that huge allocations fail with nullptr instead of crashing
   printf("Testing huge allocations\n");
   TestHugeAllocations(&rnd);
 
-  // Check that large allocations fail with NULL instead of crashing
+  // Check that large allocations fail with nullptr instead of crashing
   //
   // debug allocation takes forever for huge allocs
   if (!TestingPortal::Get()->IsDebuggingMalloc()) {
@@ -1581,16 +1644,19 @@ TEST(TCMallocTest, EmergencyMalloc) {
   // Emergency malloc doesn't call hook
   ASSERT_EQ(g_NewHook_calls, 0);
 
-  // Emergency malloc doesn't return pointers recognized by MallocExtension
+  // Emergency malloc pointers are recognized by MallocExtension::GetOwnership
   ASSERT_EQ(MallocExtension::instance()->GetOwnership(p1), MallocExtension::kOwned);
-  ASSERT_EQ(MallocExtension::instance()->GetOwnership(p2), MallocExtension::kNotOwned);
+  ASSERT_EQ(MallocExtension::instance()->GetOwnership(p2), MallocExtension::kOwned);
+
+  EXPECT_FALSE(portal->IsEmergencyPtr(p1));
+  EXPECT_TRUE(portal->IsEmergencyPtr(p2));
 
   // Emergency malloc automagically does the right thing for free()
   // calls and doesn't invoke hooks.
-  tc_free(p2);
+  free(p2);
   ASSERT_EQ(g_DeleteHook_calls, 0);
 
-  tc_free(p1);
+  free(p1);
   VerifyDeleteHookWasCalled();
 }
 
@@ -1619,11 +1685,16 @@ TEST(TCMallocTest, EmergencyMallocNoHook) {
   ASSERT_NE(p3, nullptr);
   ASSERT_NE(p4, nullptr);
 
-  // Emergency malloc doesn't return pointers recognized by MallocExtension
+  // Emergency malloc pointers are recognized by MallocExtension::GetOwnership
   ASSERT_EQ(MallocExtension::instance()->GetOwnership(p1), MallocExtension::kOwned);
-  ASSERT_EQ(MallocExtension::instance()->GetOwnership(p2), MallocExtension::kNotOwned);
-  ASSERT_EQ(MallocExtension::instance()->GetOwnership(p3), MallocExtension::kNotOwned);
-  ASSERT_EQ(MallocExtension::instance()->GetOwnership(p4), MallocExtension::kNotOwned);
+  ASSERT_EQ(MallocExtension::instance()->GetOwnership(p2), MallocExtension::kOwned);
+  ASSERT_EQ(MallocExtension::instance()->GetOwnership(p3), MallocExtension::kOwned);
+  ASSERT_EQ(MallocExtension::instance()->GetOwnership(p4), MallocExtension::kOwned);
+
+  EXPECT_FALSE(portal->IsEmergencyPtr(p1));
+  EXPECT_TRUE(portal->IsEmergencyPtr(p2));
+  EXPECT_TRUE(portal->IsEmergencyPtr(p3));
+  EXPECT_TRUE(portal->IsEmergencyPtr(p4));
 
   SetNewHook();
   SetDeleteHook();
@@ -1634,12 +1705,12 @@ TEST(TCMallocTest, EmergencyMallocNoHook) {
 
   // Emergency malloc automagically does the right thing for free()
   // calls and doesn't invoke hooks.
-  tc_free(p4);
-  tc_free(p3);
-  tc_free(p2);
+  free(p4);
+  free(p3);
+  free(p2);
   ASSERT_EQ(g_DeleteHook_calls, 0);
 
-  tc_free(p1);
+  free(p1);
   VerifyDeleteHookWasCalled();
 }
 
@@ -1659,23 +1730,6 @@ TEST(TCMallocTest, Version) {
 #undef environ
 #undef execle
 #define environ _environ
-#define execle tcmalloc_windows_execle
-
-static intptr_t tcmalloc_windows_execle(const char* pathname, const char* argv0, const char* nl, const char* envp[]) {
-  CHECK_EQ(nl, nullptr);
-  const char* args[2] = {argv0, nullptr};
-  MallocExtension::instance()->MarkThreadIdle();
-  MallocExtension::instance()->ReleaseFreeMemory();
-  // MS's CRT _execle while kinda "similar" to real thing, is totally
-  // wrong (!!!). So we simulate it by doing spawn with _P_WAIT and
-  // exiting with status that we got.
-  intptr_t rv =  _spawnve(_P_WAIT, pathname, args, envp);
-  if (rv < 0) {
-    perror("_spawnve");
-    abort();
-  }
-  _exit(static_cast<int>(rv));
-}
 #endif  // _WIN32
 
 // POSIX standard oddly requires users to define environ variable
@@ -1708,12 +1762,10 @@ struct EnvProperty {
   using override_set = std::vector<std::pair<std::string, std::string>>;
   using env_override_fn = std::function<void(override_set*)>;
 
-  static std::function<std::vector<const char*>()> DuplicateAndUpdateEnv(env_override_fn fn) {
-    return [fn] () {
-      override_set overrides;
-      fn(&overrides);
-      return DoDuplicateAndUpdateEnv(std::move(overrides));
-    };
+  static std::vector<const char*> DuplicateAndUpdateEnv(env_override_fn fn) {
+    override_set overrides;
+    fn(&overrides);
+    return DoDuplicateAndUpdateEnv(std::move(overrides));
   }
 
   static std::vector<const char*> DoDuplicateAndUpdateEnv(override_set overrides) {
@@ -1765,6 +1817,111 @@ struct EnvProperty {
   }
 };
 
+static const char* argv0; // set in HandleVariableRuns
+
+#ifndef _WIN32
+// Everything non-windows we assume sufficiently POSIX-ish
+static void ReSpawnWithEnv(EnvProperty::env_override_fn env_override) {
+  std::vector<const char*> env = EnvProperty::DuplicateAndUpdateEnv(env_override);
+  char * const child_argv[] = {const_cast<char*>(argv0), nullptr};
+  pid_t pid;
+  int rv = posix_spawn(&pid, argv0, nullptr, nullptr, child_argv, const_cast<char**>(env.data()));
+  if (rv != 0) {
+    errno = rv;
+    perror("posix_spawn");
+    abort();
+  }
+
+  // parent
+  int status = -1;
+  pid_t wait_rv;
+  do {
+    wait_rv = waitpid(pid, &status, 0);
+  } while (wait_rv < 0 && errno == EINTR);
+
+  if (wait_rv < 0) {
+    perror("waitpid");
+    abort();
+  }
+
+  CHECK_EQ(wait_rv, pid);
+  int exit_status = WEXITSTATUS(status);
+  if (!WIFEXITED(status) || exit_status != 0) {
+    printf("sub-process run failed with status = %d.\n", status);
+    if (WIFEXITED(status)) {
+      exit(exit_status);
+    }
+    exit(1);
+  }
+}
+#else
+// Windows spawning codes
+static void ReSpawnWithEnv(EnvProperty::env_override_fn env_override) {
+  std::vector<const char*> env = EnvProperty::DuplicateAndUpdateEnv(env_override);
+
+  // For windows CreateProcessA environment needs to be converted to
+  // environment block. Which is just a successive ASCIIZ strings
+  // terminated by \0 (blank string). So we convert our vector
+  // environment entries to this format.
+  env.pop_back(); // last element is nullptr
+
+  std::vector<std::string_view> env_views;
+  env_views.reserve(env.size());
+  size_t total_size = 0;
+  for (const char* s : env) {
+    env_views.push_back(s);
+    total_size += env_views.rbegin()->size() + 1;
+  }
+  total_size++; // account for final empty string
+
+  std::unique_ptr<char[]> env_block = std::make_unique<char[]>(total_size);
+  char* env_block_p = env_block.get();
+  for (std::string_view s : env_views) {
+    env_block_p = std::copy(s.begin(), s.end(), env_block_p);
+    *env_block_p++ = '\0';
+  }
+  *env_block_p++ = '\0';
+  CHECK_EQ(env_block_p, &(env_block[total_size]));
+
+  fflush(stdout);
+  fflush(stderr);
+
+  STARTUPINFOA si;
+  PROCESS_INFORMATION pi;
+
+  memset(&si, 0, sizeof(si));
+  si.cb = sizeof(si);
+  memset(&pi, 0, sizeof(pi));
+
+  if (!CreateProcessA(argv0,
+                      nullptr, // command line. nullptr implies just argv0
+                      nullptr, // process attributes
+                      nullptr, // thread attributes
+                      TRUE,    // InheritHandles
+                      0,       // creation flags
+                      env_block.get(),
+                      nullptr, // current directory
+                      &si,
+                      &pi)) {
+    printf("CreateProcessA failed with error code: %x\n", (unsigned)GetLastError());
+    abort();
+  }
+
+  WaitForSingleObject(pi.hProcess, INFINITE);
+
+  DWORD exit_code;
+  GetExitCodeProcess(pi.hProcess, &exit_code);
+
+  CloseHandle(pi.hProcess);
+  CloseHandle(pi.hThread);
+
+  if (exit_code != 0) {
+    printf("sub-process run failed with status = %d\n", (int)exit_code);
+    exit((int)exit_code);
+  }
+}
+#endif // _WIN32
+
 // We want to run tests with several runtime configuration tweaks. For
 // improved test coverage. Previously we had shell script driving
 // this, now we handle this by exec-ing just at the end of all tests.
@@ -1786,86 +1943,312 @@ struct EnvProperty {
 //
 // * TCMALLOC_ENABLE_SIZED_DELETE = t (note, this one is no-op in most
 //     common builds)
-std::function<std::vector<const char*>()> PrepareEnv() {
-  static constexpr EnvProperty kUpdateNoEnv{"TCMALLOC_UNITTEST_ENV_UPDATE_NO"};
+void HandleVariableRuns(int argc, char** argv) {
+  if (argc != 1) {
+    return;
+  }
+
+  argv0 = argv[0];
+
+  static constexpr EnvProperty kMarker{"TCMALLOC_UNITTEST_MARKER"};
   static constexpr EnvProperty kTransferNumObjEnv{"TCMALLOC_TRANSFER_NUM_OBJ"};
   static constexpr EnvProperty kAggressiveDecommitEnv{"TCMALLOC_AGGRESSIVE_DECOMMIT"};
   static constexpr EnvProperty kHeapLimitEnv{"TCMALLOC_HEAP_LIMIT_MB"};
   static constexpr EnvProperty kEnableSizedDeleteEnv{"TCMALLOC_ENABLE_SIZED_DELETE"};
 
-  std::string_view testno = kUpdateNoEnv.Get();
+  if (!kMarker.Get().empty()) {
+    return; // We're unitttest child
+  }
+
   using override_set = EnvProperty::override_set;
 
-  if (testno == "") {
-    return EnvProperty::DuplicateAndUpdateEnv([] (override_set* overrides) {
-      kTransferNumObjEnv.SetAndPrint(overrides, "40");
-      kUpdateNoEnv.Set(overrides, "1");
-    });
-  }
-  if (testno == "1") {
-    return EnvProperty::DuplicateAndUpdateEnv([] (override_set* overrides) {
-      kTransferNumObjEnv.SetAndPrint(overrides, "4096");
-      kUpdateNoEnv.Set(overrides, "2");
-    });
-  }
-  if (testno == "2") {
-    return EnvProperty::DuplicateAndUpdateEnv([] (override_set* overrides) {
-      kTransferNumObjEnv.Set(overrides, "");
-      kAggressiveDecommitEnv.SetAndPrint(overrides, "t");
-      kUpdateNoEnv.Set(overrides, "3");
-    });
-  }
-  if (testno == "3") {
-    return EnvProperty::DuplicateAndUpdateEnv([] (override_set* overrides) {
-      kAggressiveDecommitEnv.Set(overrides, "");
-      kHeapLimitEnv.SetAndPrint(overrides, "512");
-      kUpdateNoEnv.Set(overrides, "4");
-    });
-  }
-  if (testno == "4") {
-    return EnvProperty::DuplicateAndUpdateEnv([] (override_set* overrides) {
-      kHeapLimitEnv.Set(overrides, "");
-      kEnableSizedDeleteEnv.SetAndPrint(overrides, "t");
-      kUpdateNoEnv.Set(overrides, "5");
-    });
-  }
-  if (testno == "5") {
-    return {};
-  }
-  printf("Unknown %s: %.*s\n", kUpdateNoEnv.name, static_cast<int>(testno.size()), testno.data());
-  abort();
+  ReSpawnWithEnv([] (override_set* overrides) {
+    kMarker.Set(overrides, "_");
+  });
+
+  ReSpawnWithEnv([] (override_set* overrides) {
+    kTransferNumObjEnv.SetAndPrint(overrides, "40");
+    kMarker.Set(overrides, "_");
+  });
+
+  ReSpawnWithEnv([] (override_set* overrides) {
+    kTransferNumObjEnv.SetAndPrint(overrides, "4096");
+    kMarker.Set(overrides, "_");
+  });
+
+  ReSpawnWithEnv([] (override_set* overrides) {
+    kTransferNumObjEnv.Set(overrides, "");
+    kAggressiveDecommitEnv.SetAndPrint(overrides, "t");
+    kMarker.Set(overrides, "_");
+  });
+
+  ReSpawnWithEnv([] (override_set* overrides) {
+    kAggressiveDecommitEnv.Set(overrides, "");
+    kHeapLimitEnv.SetAndPrint(overrides, "512");
+    kMarker.Set(overrides, "_");
+  });
+
+  ReSpawnWithEnv([] (override_set* overrides) {
+    kHeapLimitEnv.Set(overrides, "");
+    kEnableSizedDeleteEnv.SetAndPrint(overrides, "t");
+    kMarker.Set(overrides, "_");
+  });
+
+  exit(0);
 }
 
-std::function<void()> SetupExec(int argc, char** argv) {
-  if (argc != 1) {
-    return {};
+#ifdef HAVE_FORK_TESTING_SUPPORT
+namespace fork_torture {
+
+// Fork torture testing.
+//
+// Basic idea is to enable x86 single-stepping mode. And have signal
+// handler for SIGTRAP wake up a helper thread. That helper thread
+// forks and runs some malloc activities in the child.
+//
+// We also setup cpu mask with exactly one cpu and have helper thread
+// on real-time scheduling policy. This ensures that whenever helper
+// thread runs forking, we can unblock main thread, but main thread
+// will only run when helper thread is blocked on some lock.
+//
+// Intended outcome is to exercise fork in multithreaded programs on
+// roughly every possible opportunity.
+//
+// We also add a small optimization of only really stopping on
+// instructions immediately after instruction with LOCK
+// prefix. I.e. after some locking operation is complete.
+//
+// This is Linux- and x86-64-specific for simplicity.
+
+// single_step_req is waited by the helper thread and posted by main
+// thread from single-step signal handler.
+sem_t single_step_req;
+// single_step_ack is waited by the main thread and posted by the
+// helper thread.
+sem_t single_step_ack;
+
+// in_fork is a flag set iff helper thread is running the forking activity.
+bool in_fork;
+
+// These 2 flags are helping us make sure we're actually done forking
+// at the end of test runner.
+bool stepping_stop_requested;
+bool stepping_stop_acked;
+
+uint64_t num_forks;
+
+void xsem_wait(sem_t* sem) {
+  while (sem_wait(sem) < 0) {
+    CHECK(errno == EINTR);
   }
-
-  std::function<std::vector<const char*>()> env_fn = PrepareEnv();
-  if (!env_fn) {
-    return env_fn;
-  }
-
-  const char* program_name = strdup(argv[0]);
-  // printf("program_name = %s\n", program_name);
-
-  return [program_name, env_fn] () {
-    std::vector<const char*> vec = env_fn();
-
-    // printf("pre-exec:\n");
-    // for (const char* k_and_v : vec) {
-    //   if (k_and_v) {
-    //     printf("%s\n", k_and_v);
-    //   }
-    // }
-    // printf("\n");
-
-    CHECK_EQ(execle(program_name, program_name, nullptr, vec.data()), 0);
-  };
 }
+
+constexpr uintptr_t kTF = 0x100; // Trace flag in x86 FLAGS register.
+
+bool try_handle_sigtrap_blocking(uint8_t* at_rip, ucontext_t* uc);
+
+void step_handler(int signo, siginfo_t* si, void* _uc) {
+  ucontext_t* uc = static_cast<ucontext_t*>(_uc);
+  auto at_rip = reinterpret_cast<uint8_t*>(uc->uc_mcontext.gregs[REG_RIP]);
+
+  if (stepping_stop_requested) {
+    uc->uc_mcontext.gregs[REG_EFL] &= ~kTF;
+    while (in_fork) {
+      (void)*const_cast<volatile bool*>(&in_fork);
+    }
+    stepping_stop_acked = true;
+    return;
+  }
+
+  if (try_handle_sigtrap_blocking(at_rip, uc)) {
+    return;
+  }
+
+  if (in_fork) {
+    return;
+  }
+
+  // Add TF to flags and request SIGTRAP on every instruction in this
+  // thread. We could do it only once, but it is harmless to do it
+  // always.
+  uc->uc_mcontext.gregs[REG_EFL] |= kTF;
+
+  static bool last_was_lock;
+
+  if (!last_was_lock) {
+    if (*at_rip == 0xf0) { // lock prefix.
+      last_was_lock = true;
+    }
+    return;
+  }
+
+  last_was_lock = false;
+
+  int errno_save = errno;
+
+  (void)sem_post(&single_step_req);
+  xsem_wait(&single_step_ack);
+
+  errno = errno_save;
+}
+
+bool try_handle_sigtrap_blocking(uint8_t* at_rip, ucontext_t* uc) {
+  if (at_rip[0] != 0x0f || at_rip[1] != 0x05) {
+    return false;
+  }
+
+  // syscall instruction. Lets check if someone is about to block
+  // SIGTRAP. If so we must turn off single-stepping, because
+  // otherwise blocked SIGTRAP and pending single-stepping will kill
+  // the process.
+
+  auto& regs = uc->uc_mcontext.gregs;
+  if (regs[REG_RAX] != SYS_rt_sigprocmask) {
+    return false;
+  }
+  if (regs[REG_RDI] != SIG_SETMASK && regs[REG_RDI] != SIG_BLOCK) {
+    return false;
+  }
+  sigset_t* newmask = reinterpret_cast<sigset_t*>(regs[REG_RSI]);
+  if (!newmask || !sigismember(newmask, SIGTRAP)) {
+    return false;
+  }
+
+  // okay, once we detected this case, we drop single-stepping
+  // flag, block SIGTRAP and raise it. So that when SIGTRAP is
+  // eventually unblocked, we'll get back to signal hander and
+  // re-set single-stepping back.
+  regs[REG_EFL] &= ~kTF;
+  raise(SIGTRAP);
+  sigset_t* oldmask = reinterpret_cast<sigset_t*>(regs[REG_RDX]);
+  if (oldmask) {
+    *oldmask = uc->uc_sigmask;
+    regs[REG_RDX] = 0; // handle "get old mask" part, so we can block
+                       // our signal
+  }
+  sigaddset(&uc->uc_sigmask, SIGTRAP);
+
+  return true;
+}
+
+tcmalloc::Cleanup<std::function<void()>> setup_fork_testing(int* argc, char *** argv) {
+  if (*argc < 2 || (*argv)[1] != std::string("--with-fork-torture")) {
+    printf("Not enabling fork torture\n");
+    return tcmalloc::Cleanup(std::function<void()>([] () {}));
+  }
+  printf("Enabling fork torturing!!!!\n");
+
+  CHECK(sem_init(&single_step_req, 0, 0) == 0);
+  CHECK(sem_init(&single_step_ack, 0, 0) == 0);
+
+  // First, we set cpu affinity mask to only core 0. It helps
+  // performance, but mostly it is required so that main thread never
+  // runs when real-time helper thread is runnable.
+  {
+    cpu_set_t mask;
+    memset(&mask, 0, sizeof(mask));
+    CPU_SET(0, &mask);
+    CHECK(sched_setaffinity(0, sizeof(mask), &mask) == 0);
+  }
+
+  // Then we prepare SIGTRAP signal handler.
+  {
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_sigaction = step_handler;
+    sa.sa_flags = SA_RESTART | SA_SIGINFO;
+    CHECK(sigaction(SIGTRAP, &sa, nullptr) == 0);
+  }
+
+  std::thread* t = new std::thread([] () {
+    // Helper thread first makes itself real-time.
+    struct sched_param p;
+    memset(&p, 0, sizeof(p));
+    p.sched_priority = 1;
+    CHECK(sched_setscheduler(0, SCHED_FIFO, &p) == 0);
+
+    // And then signals its readiness.
+    sem_post(&single_step_ack);
+
+    MallocExtension::instance()->MarkThreadIdle();
+
+    constexpr int kPeriod = 1 << 10;
+    int cnt = kPeriod;
+
+    while (true) {
+      xsem_wait(&single_step_req);
+      // Lets print something every few iterations to help us see if
+      // progress is being made.
+      if (--cnt <= 0) {
+        write(2, "$", 1);
+        cnt = kPeriod;
+      }
+
+      // Once we're about to fork, we need to flag "in_fork" mode and
+      // unblock main thread.
+      in_fork = true;
+      sem_post(&single_step_ack);
+
+      int child = fork();
+      CHECK(child >= 0);
+      if (child == 0) {
+        // Child runs some mallocs and exits.
+        (::operator delete)((::operator new)(32));
+        (::operator delete)((::operator new)(1024));
+        (::operator delete)((::operator new)(2 << 20));
+        _exit(0);
+      }
+
+      // Parent asserts that child exited cleanly.
+      int status = 0;
+      int ret = waitpid(child, &status, 0);
+      CHECK(ret == child);
+      CHECK(status == 0);
+
+      // And we un-mark in_fork mode, so that main thread continues to
+      // cooperation via sem_{post/wait} on single_step_{req,ack}
+      // semaphores.
+      num_forks++;
+      in_fork = false;
+    }
+  });
+  (void)t; // leak
+  xsem_wait(&single_step_ack);
+
+  MallocExtension::instance()->MarkThreadIdle();
+
+  // First SIGTRAP runs the signal handler and signal handler sets up
+  // EFLAGS to single-step.
+  raise(SIGTRAP);
+
+  // This is a flag for a test that is not compatible with
+  // single-stepping. NewHandler test doesn't work because it enables
+  // oom simulation at some point which, naturally, crashes the forked
+  // child.
+  running_fork_testing = true;
+
+  return tcmalloc::Cleanup(std::function<void()>([] () {
+    stepping_stop_requested = true;
+    while (!*const_cast<volatile bool*>(&stepping_stop_acked)) {
+      // no-op
+    }
+    // In the clean up, we're ensuring that in_fork turns to false, so
+    // that fork/waitpid isn't stuck.
+    printf("Done with fork torturing! Number of forks performed: %lld\n", (long long)num_forks);
+  }));
+}
+}  // namespace fork_torture
+
+using fork_torture::setup_fork_testing;
+
+#else  // HAVE_FORK_TESTING_SUPPORT
+
+int setup_fork_testing(int* argc, char *** argv) {return 0;}
+
+#endif  // !HAVE_FORK_TESTING_SUPPORT
 
 int main(int argc, char** argv) {
-  std::function<void()> exec_fn = SetupExec(argc, argv);
+  HandleVariableRuns(argc, argv);
 
   if (TestingPortal::Get()->IsDebuggingMalloc()) {
     // return freed blocks to tcmalloc immediately
@@ -1882,14 +2265,11 @@ int main(int argc, char** argv) {
 
   testing::InitGoogleTest(&argc, argv);
 
+  auto fork_cleanup = setup_fork_testing(&argc, &argv);
+  (void)fork_cleanup;
+
   int err_code = RUN_ALL_TESTS();
-  if (err_code || !exec_fn) {
+  if (err_code) {
     return err_code;
   }
-
-  // if exec_fn is not empty and we've passed tests so far, lets try
-  // to continue testing by updating environment variables and
-  // self-execing.
-  exec_fn();
-  printf("Shouldn't be reachable\n");
 }

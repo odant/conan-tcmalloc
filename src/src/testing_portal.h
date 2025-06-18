@@ -42,7 +42,7 @@
 
 namespace tcmalloc {
 
-class ATTRIBUTE_HIDDEN TestingPortal {
+class ATTRIBUTE_VISIBILITY_HIDDEN TestingPortal {
 public:
   static inline constexpr char kMagic[] = "tcmalloc.impl.testing-portal";
   static TestingPortal* Get() {
@@ -77,11 +77,8 @@ public:
   virtual int32_t& GetMaxFreeQueueSize() = 0;
 
   virtual bool HasEmergencyMalloc() = 0;
+  virtual bool IsEmergencyPtr(void* ptr) = 0;
   virtual void WithEmergencyMallocEnabled(FunctionRef<void()> body) = 0;
-
-  // For heap checker unit test
-  virtual std::string_view GetHeapCheckFlag() = 0;
-  virtual void IterateMemoryRegionMap(FunctionRef<void(const void*)> callback) = 0;
 
 protected:
   virtual ~TestingPortal();

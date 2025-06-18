@@ -118,31 +118,31 @@ size_t mz_size(malloc_zone_t* zone, const void* ptr) {
   return MallocExtension::instance()->GetAllocatedSize(const_cast<void*>(ptr));
 }
 
-ATTRIBUTE_SECTION(google_malloc) void* mz_malloc(malloc_zone_t* zone, size_t size) {
+ATTRIBUTE_NOINLINE void* mz_malloc(malloc_zone_t* zone, size_t size) {
   return tc_malloc(size);
 }
 
-ATTRIBUTE_SECTION(google_malloc) void* mz_calloc(malloc_zone_t* zone, size_t num_items, size_t size) {
+ATTRIBUTE_NOINLINE void* mz_calloc(malloc_zone_t* zone, size_t num_items, size_t size) {
   return tc_calloc(num_items, size);
 }
 
-ATTRIBUTE_SECTION(google_malloc) void* mz_valloc(malloc_zone_t* zone, size_t size) {
+ATTRIBUTE_NOINLINE void* mz_valloc(malloc_zone_t* zone, size_t size) {
   return tc_valloc(size);
 }
 
-ATTRIBUTE_SECTION(google_malloc) void mz_free(malloc_zone_t* zone, void* ptr) {
+ATTRIBUTE_NOINLINE void mz_free(malloc_zone_t* zone, void* ptr) {
   return tc_free(ptr);
 }
 
-ATTRIBUTE_SECTION(google_malloc) void mz_free_definite_size(malloc_zone_t* zone, void *ptr, size_t size) {
+ATTRIBUTE_NOINLINE void mz_free_definite_size(malloc_zone_t* zone, void *ptr, size_t size) {
   return tc_free(ptr);
 }
 
-ATTRIBUTE_SECTION(google_malloc) void* mz_realloc(malloc_zone_t* zone, void* ptr, size_t size) {
+ATTRIBUTE_NOINLINE void* mz_realloc(malloc_zone_t* zone, void* ptr, size_t size) {
   return tc_realloc(ptr, size);
 }
 
-ATTRIBUTE_SECTION(google_malloc) void* mz_memalign(malloc_zone_t* zone, size_t align, size_t size) {
+ATTRIBUTE_NOINLINE void* mz_memalign(malloc_zone_t* zone, size_t align, size_t size) {
   return tc_memalign(align, size);
 }
 
@@ -221,7 +221,7 @@ extern "C" {
 }  // extern "C"
 
 static malloc_zone_t *get_default_zone() {
-   malloc_zone_t **zones = NULL;
+   malloc_zone_t **zones = nullptr;
    unsigned int num_zones = 0;
 
    /*
@@ -234,7 +234,7 @@ static malloc_zone_t *get_default_zone() {
     * So get the list of zones to get the first one, instead of relying on
     * malloc_default_zone.
     */
-   if (KERN_SUCCESS != malloc_get_all_zones(0, NULL, (vm_address_t**) &zones,
+   if (KERN_SUCCESS != malloc_get_all_zones(0, nullptr, (vm_address_t**) &zones,
                                             &num_zones)) {
        /* Reset the value in case the failure happened after it was set. */
        num_zones = 0;
@@ -272,8 +272,8 @@ static void ReplaceSystemAlloc() {
   tcmalloc_zone.free = &mz_free;
   tcmalloc_zone.realloc = &mz_realloc;
   tcmalloc_zone.destroy = &mz_destroy;
-  tcmalloc_zone.batch_malloc = NULL;
-  tcmalloc_zone.batch_free = NULL;
+  tcmalloc_zone.batch_malloc = nullptr;
+  tcmalloc_zone.batch_free = nullptr;
   tcmalloc_zone.introspect = &tcmalloc_introspection;
 
   // from AvailabilityMacros.h
@@ -316,36 +316,36 @@ static void ReplaceSystemAlloc() {
   malloc_zone_register(default_zone);
 }
 
-ATTRIBUTE_SECTION(google_malloc) void* operator new(std::size_t sz) { return tc_new(sz); }
-ATTRIBUTE_SECTION(google_malloc) void* operator new[](std::size_t sz) { return tc_newarray(sz); }
-ATTRIBUTE_SECTION(google_malloc) void operator delete(void* p) { tc_delete(p); }
-ATTRIBUTE_SECTION(google_malloc) void operator delete[](void* p) { tc_deletearray(p); }
+ATTRIBUTE_NOINLINE void* operator new(std::size_t sz) { return tc_new(sz); }
+ATTRIBUTE_NOINLINE void* operator new[](std::size_t sz) { return tc_newarray(sz); }
+ATTRIBUTE_NOINLINE void operator delete(void* p) { tc_delete(p); }
+ATTRIBUTE_NOINLINE void operator delete[](void* p) { tc_deletearray(p); }
 
-ATTRIBUTE_SECTION(google_malloc) void operator delete(void* p, std::size_t sz) { tc_delete_sized(p, sz); }
-ATTRIBUTE_SECTION(google_malloc) void operator delete[](void* p, std::size_t sz) { tc_deletearray_sized(p, sz); }
+ATTRIBUTE_NOINLINE void operator delete(void* p, std::size_t sz) { tc_delete_sized(p, sz); }
+ATTRIBUTE_NOINLINE void operator delete[](void* p, std::size_t sz) { tc_deletearray_sized(p, sz); }
 
-ATTRIBUTE_SECTION(google_malloc) void* operator new(std::size_t sz, const std::nothrow_t& nt) { return tc_new_nothrow(sz, nt); }
-ATTRIBUTE_SECTION(google_malloc) void* operator new[](std::size_t sz, const std::nothrow_t& nt) { return tc_newarray_nothrow(sz, nt); };
+ATTRIBUTE_NOINLINE void* operator new(std::size_t sz, const std::nothrow_t& nt) { return tc_new_nothrow(sz, nt); }
+ATTRIBUTE_NOINLINE void* operator new[](std::size_t sz, const std::nothrow_t& nt) { return tc_newarray_nothrow(sz, nt); };
 
-ATTRIBUTE_SECTION(google_malloc) void operator delete(void* p, const std::nothrow_t& nt) { tc_delete_nothrow(p, nt); }
-ATTRIBUTE_SECTION(google_malloc) void operator delete[](void* p, const std::nothrow_t& nt) { tc_deletearray_nothrow(p, nt); }
+ATTRIBUTE_NOINLINE void operator delete(void* p, const std::nothrow_t& nt) { tc_delete_nothrow(p, nt); }
+ATTRIBUTE_NOINLINE void operator delete[](void* p, const std::nothrow_t& nt) { tc_deletearray_nothrow(p, nt); }
 
 #if __cplusplus >= 201703L
 
-ATTRIBUTE_SECTION(google_malloc) void* operator new(std::size_t sz, std::align_val_t a) { return tc_new_aligned(sz, a); }
-ATTRIBUTE_SECTION(google_malloc) void* operator new(std::size_t sz, std::align_val_t al, const std::nothrow_t& nt) { return tc_new_aligned_nothrow(sz, al, nt); }
+ATTRIBUTE_NOINLINE void* operator new(std::size_t sz, std::align_val_t a) { return tc_new_aligned(sz, a); }
+ATTRIBUTE_NOINLINE void* operator new(std::size_t sz, std::align_val_t al, const std::nothrow_t& nt) { return tc_new_aligned_nothrow(sz, al, nt); }
 
-ATTRIBUTE_SECTION(google_malloc) void operator delete(void* p, std::align_val_t al) { tc_delete_aligned(p, al); }
-ATTRIBUTE_SECTION(google_malloc) void operator delete(void* p, std::align_val_t al, const std::nothrow_t& nt)  { tc_delete_aligned_nothrow(p, al, nt); }
+ATTRIBUTE_NOINLINE void operator delete(void* p, std::align_val_t al) { tc_delete_aligned(p, al); }
+ATTRIBUTE_NOINLINE void operator delete(void* p, std::align_val_t al, const std::nothrow_t& nt)  { tc_delete_aligned_nothrow(p, al, nt); }
 
-ATTRIBUTE_SECTION(google_malloc) void* operator new[](std::size_t sz, std::align_val_t al) { return tc_newarray_aligned(sz, al); }
-ATTRIBUTE_SECTION(google_malloc) void* operator new[](std::size_t sz, std::align_val_t al, const std::nothrow_t& nt) { return tc_newarray_aligned_nothrow(sz, al, nt); }
+ATTRIBUTE_NOINLINE void* operator new[](std::size_t sz, std::align_val_t al) { return tc_newarray_aligned(sz, al); }
+ATTRIBUTE_NOINLINE void* operator new[](std::size_t sz, std::align_val_t al, const std::nothrow_t& nt) { return tc_newarray_aligned_nothrow(sz, al, nt); }
 
-ATTRIBUTE_SECTION(google_malloc) void operator delete[](void* p, std::align_val_t al) { tc_deletearray_aligned(p, al); }
-ATTRIBUTE_SECTION(google_malloc) void operator delete[](void* p, std::align_val_t al, const std::nothrow_t& nt) { tc_deletearray_aligned_nothrow(p, al, nt); }
+ATTRIBUTE_NOINLINE void operator delete[](void* p, std::align_val_t al) { tc_deletearray_aligned(p, al); }
+ATTRIBUTE_NOINLINE void operator delete[](void* p, std::align_val_t al, const std::nothrow_t& nt) { tc_deletearray_aligned_nothrow(p, al, nt); }
 
-ATTRIBUTE_SECTION(google_malloc) void operator delete(void* p, std::size_t sz, std::align_val_t al) { tc_delete_sized_aligned(p, sz, al); }
-ATTRIBUTE_SECTION(google_malloc) void operator delete[](void* p, std::size_t sz, std::align_val_t al) { tc_deletearray_sized_aligned(p, sz, al); }
+ATTRIBUTE_NOINLINE void operator delete(void* p, std::size_t sz, std::align_val_t al) { tc_delete_sized_aligned(p, sz, al); }
+ATTRIBUTE_NOINLINE void operator delete[](void* p, std::size_t sz, std::align_val_t al) { tc_deletearray_sized_aligned(p, sz, al); }
 
 #endif // c++ 17
 

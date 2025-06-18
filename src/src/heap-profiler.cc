@@ -44,9 +44,6 @@
 #ifdef HAVE_FCNTL_H
 #include <fcntl.h>    // for open()
 #endif
-#ifdef HAVE_MMAP
-#include <sys/mman.h>
-#endif
 #include <errno.h>
 #include <assert.h>
 #include <sys/types.h>
@@ -70,8 +67,7 @@
 #include "base/low_level_alloc.h"
 #include "base/sysinfo.h"      // for GetUniquePathFromEnv()
 #include "heap-profile-table.h"
-#include "memory_region_map.h"
-#include "mmap_hook.h"
+#include "malloc_backtrace.h"
 
 #ifndef	PATH_MAX
 #ifdef MAXPATHLEN
@@ -81,7 +77,7 @@
 #endif
 #endif
 
-using std::string;
+using tcmalloc::LowLevelAlloc;
 
 //----------------------------------------------------------------------
 // Flags that control heap-profiling
@@ -111,16 +107,6 @@ DEFINE_int64(heap_profile_time_interval,
              EnvToInt64("HEAP_PROFILE_TIME_INTERVAL", 0),
              "If non-zero, dump heap profiling information once every "
              "specified number of seconds since the last dump.");
-DEFINE_bool(mmap_log,
-            EnvToBool("HEAP_PROFILE_MMAP_LOG", false),
-            "Should mmap/munmap calls be logged?");
-DEFINE_bool(mmap_profile,
-            EnvToBool("HEAP_PROFILE_MMAP", false),
-            "If heap-profiling is on, also profile mmap, mremap, and sbrk)");
-DEFINE_bool(only_mmap_profile,
-            EnvToBool("HEAP_PROFILE_ONLY_MMAP", false),
-            "If heap-profiling is on, only profile mmap, mremap, and sbrk; "
-            "do not profile malloc/new/etc");
 
 
 //----------------------------------------------------------------------
@@ -156,17 +142,17 @@ static void ProfilerFree(void* p) {
 //----------------------------------------------------------------------
 
 // Access to all of these is protected by heap_lock.
-static bool  is_on = false;           // If are on as a subsytem.
-static bool  dumping = false;         // Dumping status to prevent recursion
-static char* filename_prefix = NULL;  // Prefix used for profile file names
-                                      // (NULL if no need for dumping yet)
-static int   dump_count = 0;          // How many dumps so far
-static int64_t last_dump_alloc = 0;     // alloc_size when did we last dump
-static int64_t last_dump_free = 0;      // free_size when did we last dump
-static int64_t high_water_mark = 0;     // In-use-bytes at last high-water dump
-static int64_t last_dump_time = 0;      // The time of the last dump
+static bool  is_on;           // If are on as a subsytem.
+static bool  dumping;         // Dumping status to prevent recursion
+static char* filename_prefix; // Prefix used for profile file names
+                              // (nullptr if no need for dumping yet)
+static int   dump_count;      // How many dumps so far
+static int64_t last_dump_alloc;  // alloc_size when did we last dump
+static int64_t last_dump_free;   // free_size when did we last dump
+static int64_t high_water_mark;  // In-use-bytes at last high-water dump
+static int64_t last_dump_time;   // The time of the last dump
 
-static HeapProfileTable* heap_profile = NULL;  // the heap profile table
+static HeapProfileTable* heap_profile;  // the heap profile table
 
 //----------------------------------------------------------------------
 // Profile generation
@@ -199,7 +185,7 @@ static void DumpProfileLocked(const char* reason) {
   RAW_DCHECK(is_on, "");
   RAW_DCHECK(!dumping, "");
 
-  if (filename_prefix == NULL) return;  // we do not yet need dumping
+  if (filename_prefix == nullptr) return;  // we do not yet need dumping
 
   dumping = true;
 
@@ -268,7 +254,7 @@ static void MaybeDumpProfileLocked() {
                inuse_bytes >> 20);
       need_to_dump = true;
     } else if (FLAGS_heap_profile_time_interval > 0 ) {
-      int64_t current_time = time(NULL);
+      int64_t current_time = time(nullptr);
       if (current_time - last_dump_time >=
           FLAGS_heap_profile_time_interval) {
         snprintf(buf, sizeof(buf), "%" PRId64 " sec since the last dump",
@@ -288,11 +274,18 @@ static void MaybeDumpProfileLocked() {
   }
 }
 
+//----------------------------------------------------------------------
+// Allocation/deallocation hooks for MallocHook
+//----------------------------------------------------------------------
+
 // Record an allocation in the profile.
-static void RecordAlloc(const void* ptr, size_t bytes, int skip_count) {
+static void NewHook(const void* ptr, size_t bytes) {
+  if (!ptr) return;
+
   // Take the stack trace outside the critical section.
-  void* stack[HeapProfileTable::kMaxStackDepth];
-  int depth = HeapProfileTable::GetCallerStackTrace(skip_count + 1, stack);
+  static constexpr int kDepth = 32;
+  void* stack[kDepth];
+  int depth = tcmalloc::GrabBacktrace(stack, kDepth, 1);
   SpinLockHolder l(&heap_lock);
   if (is_on) {
     heap_profile->RecordAlloc(ptr, bytes, depth, stack);
@@ -301,7 +294,9 @@ static void RecordAlloc(const void* ptr, size_t bytes, int skip_count) {
 }
 
 // Record a deallocation in the profile.
-static void RecordFree(const void* ptr) {
+static void DeleteHook(const void* ptr) {
+  if (!ptr) return;
+
   SpinLockHolder l(&heap_lock);
   if (is_on) {
     heap_profile->RecordFree(ptr);
@@ -310,73 +305,16 @@ static void RecordFree(const void* ptr) {
 }
 
 //----------------------------------------------------------------------
-// Allocation/deallocation hooks for MallocHook
-//----------------------------------------------------------------------
-
-// static
-void NewHook(const void* ptr, size_t size) {
-  if (ptr != NULL) RecordAlloc(ptr, size, 0);
-}
-
-// static
-void DeleteHook(const void* ptr) {
-  if (ptr != NULL) RecordFree(ptr);
-}
-
-static tcmalloc::MappingHookSpace mmap_logging_hook_space;
-
-static void LogMappingEvent(const tcmalloc::MappingEvent& evt) {
-  if (!FLAGS_mmap_log) {
-    return;
-  }
-
-  if (evt.file_valid) {
-    // We use PRIxPTR not just '%p' to avoid deadlocks
-    // in pretty-printing of NULL as "nil".
-    // TODO(maxim): instead should use a safe snprintf reimplementation
-    RAW_LOG(INFO,
-            "mmap(start=0x%" PRIxPTR ", len=%zu, prot=0x%x, flags=0x%x, "
-            "fd=%d, offset=0x%llx) = 0x%" PRIxPTR "",
-            (uintptr_t) evt.before_address, evt.after_length, evt.prot,
-            evt.flags, evt.file_fd, (unsigned long long) evt.file_off,
-            (uintptr_t) evt.after_address);
-  } else if (evt.after_valid && evt.before_valid) {
-    // We use PRIxPTR not just '%p' to avoid deadlocks
-    // in pretty-printing of NULL as "nil".
-    // TODO(maxim): instead should use a safe snprintf reimplementation
-    RAW_LOG(INFO,
-            "mremap(old_addr=0x%" PRIxPTR ", old_size=%zu, "
-            "new_size=%zu, flags=0x%x, new_addr=0x%" PRIxPTR ") = "
-            "0x%" PRIxPTR "",
-            (uintptr_t) evt.before_address, evt.before_length, evt.after_length, evt.flags,
-            (uintptr_t) evt.after_address, (uintptr_t) evt.after_address);
-  } else if (evt.is_sbrk) {
-    intptr_t increment;
-    uintptr_t result;
-    if (evt.after_valid) {
-      increment = evt.after_length;
-      result = reinterpret_cast<uintptr_t>(evt.after_address) + evt.after_length;
-    } else {
-      increment = -static_cast<intptr_t>(evt.before_length);
-      result = reinterpret_cast<uintptr_t>(evt.before_address);
-    }
-
-    RAW_LOG(INFO, "sbrk(inc=%zd) = 0x%" PRIxPTR "",
-                  increment, (uintptr_t) result);
-  } else if (evt.before_valid) {
-    // We use PRIxPTR not just '%p' to avoid deadlocks
-    // in pretty-printing of NULL as "nil".
-    // TODO(maxim): instead should use a safe snprintf reimplementation
-    RAW_LOG(INFO, "munmap(start=0x%" PRIxPTR ", len=%zu)",
-                  (uintptr_t) evt.before_address, evt.before_length);
-  }
-}
-
-//----------------------------------------------------------------------
 // Starting/stopping/dumping
 //----------------------------------------------------------------------
 
 extern "C" void HeapProfilerStart(const char* prefix) {
+  // A bit of a kludge. When we dump heap profiles on certain systems
+  // (e.g. FreeBSD), we'll invoke GetProgramInvocationName and it'll
+  // malloc. And we cannot malloc when under heap profiler lock(s). So
+  // lets do it now (it caches the name internally).
+  (void)tcmalloc::GetProgramInvocationName();
+
   SpinLockHolder l(&heap_lock);
 
   if (is_on) return;
@@ -389,26 +327,10 @@ extern "C" void HeapProfilerStart(const char* prefix) {
   // call new, and we want that to be accounted for correctly.
   MallocExtension::Initialize();
 
-  if (FLAGS_only_mmap_profile) {
-    FLAGS_mmap_profile = true;
-  }
-
-  if (FLAGS_mmap_profile) {
-    // Ask MemoryRegionMap to record all mmap, mremap, and sbrk
-    // call stack traces of at least size kMaxStackDepth:
-    MemoryRegionMap::Init(HeapProfileTable::kMaxStackDepth,
-                          /* use_buckets */ true);
-  }
-
-  if (FLAGS_mmap_log) {
-    // Install our hooks to do the logging:
-    tcmalloc::HookMMapEvents(&mmap_logging_hook_space, LogMappingEvent);
-  }
-
-  heap_profiler_memory = LowLevelAlloc::NewArena(nullptr);
+  heap_profiler_memory = LowLevelAlloc::NewArena();
 
   heap_profile = new(ProfilerMalloc(sizeof(HeapProfileTable)))
-      HeapProfileTable(ProfilerMalloc, ProfilerFree, FLAGS_mmap_profile);
+      HeapProfileTable(ProfilerMalloc, ProfilerFree);
 
   last_dump_alloc = 0;
   last_dump_free = 0;
@@ -419,14 +341,12 @@ extern "C" void HeapProfilerStart(const char* prefix) {
   // HeapProfilerStart/HeapProfileStop, we will get a continuous
   // sequence of profiles.
 
-  if (FLAGS_only_mmap_profile == false) {
-    // Now set the hooks that capture new/delete and malloc/free.
-    RAW_CHECK(MallocHook::AddNewHook(&NewHook), "");
-    RAW_CHECK(MallocHook::AddDeleteHook(&DeleteHook), "");
-  }
+  // Now set the hooks that capture new/delete and malloc/free.
+  RAW_CHECK(MallocHook::AddNewHook(&NewHook), "");
+  RAW_CHECK(MallocHook::AddDeleteHook(&DeleteHook), "");
 
   // Copy filename prefix
-  RAW_DCHECK(filename_prefix == NULL, "");
+  RAW_DCHECK(filename_prefix == nullptr, "");
   const int prefix_length = strlen(prefix);
   filename_prefix = reinterpret_cast<char*>(ProfilerMalloc(prefix_length + 1));
   memcpy(filename_prefix, prefix, prefix_length);
@@ -443,31 +363,21 @@ extern "C" void HeapProfilerStop() {
 
   if (!is_on) return;
 
-  if (FLAGS_only_mmap_profile == false) {
-    // Unset our new/delete hooks, checking they were set:
-    RAW_CHECK(MallocHook::RemoveNewHook(&NewHook), "");
-    RAW_CHECK(MallocHook::RemoveDeleteHook(&DeleteHook), "");
-  }
-  if (FLAGS_mmap_log) {
-    // Restore mmap/sbrk hooks, checking that our hooks were set:
-    tcmalloc::UnHookMMapEvents(&mmap_logging_hook_space);
-  }
+  // Unset our new/delete hooks, checking they were set:
+  RAW_CHECK(MallocHook::RemoveNewHook(&NewHook), "");
+  RAW_CHECK(MallocHook::RemoveDeleteHook(&DeleteHook), "");
 
   // free profile
   heap_profile->~HeapProfileTable();
   ProfilerFree(heap_profile);
-  heap_profile = NULL;
+  heap_profile = nullptr;
 
   // free prefix
   ProfilerFree(filename_prefix);
-  filename_prefix = NULL;
+  filename_prefix = nullptr;
 
   if (!LowLevelAlloc::DeleteArena(heap_profiler_memory)) {
     RAW_LOG(FATAL, "Memory leak in HeapProfiler:");
-  }
-
-  if (FLAGS_mmap_profile) {
-    MemoryRegionMap::Shutdown();
   }
 
   is_on = false;
@@ -515,8 +425,8 @@ static void HeapProfilerInit() {
 #endif
 
   char *signal_number_str = getenv("HEAPPROFILESIGNAL");
-  if (signal_number_str != NULL) {
-    long int signal_number = strtol(signal_number_str, NULL, 10);
+  if (signal_number_str != nullptr) {
+    long int signal_number = strtol(signal_number_str, nullptr, 10);
     intptr_t old_signal_handler = reinterpret_cast<intptr_t>(signal(signal_number, HeapProfilerDumpSignal));
     if (old_signal_handler == reinterpret_cast<intptr_t>(SIG_ERR)) {
       RAW_LOG(FATAL, "Failed to set signal. Perhaps signal number %s is invalid\n", signal_number_str);

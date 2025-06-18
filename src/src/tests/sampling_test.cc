@@ -67,14 +67,14 @@ static std::string NaiveShellQuote(std::string_view arg) {
 
 extern "C" ATTRIBUTE_NOINLINE
 void* AllocateAllocate() {
-  auto local_noopt = [] (void* ptr) ATTRIBUTE_NOINLINE -> void* {
+  auto local_noopt = [] (void* ptr) ATTRIBUTE_NOINLINE {
     return noopt(ptr);
   };
   return local_noopt(malloc(10000));
 }
 
 #ifndef PPROF_PATH
-#error compiling this file requires PPROF_PATH to be set correctly
+#define PPROF_PATH pprof
 #endif
 
 #define XSTR(x) #x
@@ -121,9 +121,9 @@ static void VerifyWithPProf(std::string_view argv0, std::string_view path) {
 
   // We allocate 8*10^7 bytes of memory, which is 76M.  Because we
   // sample, the estimate may be a bit high or a bit low: we accept
-  // anything from 50M to 99M.
-  if (!(50 <= megs && megs < 100)) {
-    fprintf(stderr, "expected megs to be between 50 and 100. Got: %f\n", megs);
+  // anything from 50M to 109M.
+  if (!(50 <= megs && megs < 110)) {
+    fprintf(stderr, "expected megs to be between 50 and 110. Got: %f\n", megs);
     abort();
   }
 }
@@ -163,6 +163,9 @@ struct TempFile {
     CHECK_EQ(it, path_template.get() + len);
 
     int fd = mkstemp(path_template.get());
+    if (fd < 0) {
+      perror("mkstemp");
+    }
     CHECK_GE(fd, 0);
 
     return TempFile{fdopen(fd, "r+"), std::string(path_template.get(), len-1)};

@@ -38,6 +38,7 @@
 /debugallocation_test
 /debugallocation_test.sh
 /depcomp
+/docs/*.html
 /frag_unittest
 /frag_unittest.exe
 /function_ref_test
@@ -56,6 +57,7 @@
 /heap-profiler_debug_unittest.sh
 /heap-profiler_unittest
 /heap-profiler_unittest.sh
+/heap_checker_stub_test
 /install-sh
 /libprofiler.pc
 /libtcmalloc.pc
@@ -91,14 +93,12 @@
 /min_per_thread_cache_size_test
 /min_per_thread_cache_size_test.exe
 /missing
-/mmap_hook_test
 /packed_cache_test
 /packed_cache_test.exe
 /page_heap_test
 /page_heap_test.exe
 /pagemap_unittest
 /pagemap_unittest.exe
-/pprof-symbolize
 /proc_maps_iterator_test
 /proc_maps_iterator_test.exe
 /profile_handler_unittest
@@ -165,3 +165,7 @@
 /unwind_bench.exe
 /vendor/googletest/googletest/src/.deps
 /vendor/googletest/googletest/src/.dirstamp
+/vendor/libbacktrace-integration/.deps
+/vendor/libbacktrace-integration/.dirstamp
+/vendor/libbacktrace/.deps
+/vendor/libbacktrace/.dirstamp

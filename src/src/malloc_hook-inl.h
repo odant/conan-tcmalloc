@@ -124,25 +124,23 @@ ATTRIBUTE_VISIBILITY_HIDDEN extern HookList<MallocHook::DeleteHook> delete_hooks
 } }  // namespace base::internal
 
 // The following method is DEPRECATED
-inline MallocHook::NewHook MallocHook::GetNewHook() {
-  return base::internal::new_hooks_.GetSingular();
-}
 
-inline void MallocHook::InvokeNewHook(const void* p, size_t s) {
+namespace tcmalloc {
+void InvokeNewHookSlow(const void* p, size_t s);
+void InvokeDeleteHookSlow(const void* p);
+
+static inline void InvokeNewHook(const void* p, size_t s) {
   if (PREDICT_FALSE(!base::internal::new_hooks_.empty())) {
     InvokeNewHookSlow(p, s);
   }
 }
 
-// The following method is DEPRECATED
-inline MallocHook::DeleteHook MallocHook::GetDeleteHook() {
-  return base::internal::delete_hooks_.GetSingular();
-}
-
-inline void MallocHook::InvokeDeleteHook(const void* p) {
+static inline void InvokeDeleteHook(const void* p) {
   if (PREDICT_FALSE(!base::internal::delete_hooks_.empty())) {
     InvokeDeleteHookSlow(p);
   }
 }
+
+}  // namespace tcmalloc
 
 #endif /* _MALLOC_HOOK_INL_H_ */
