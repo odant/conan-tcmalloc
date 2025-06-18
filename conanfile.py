@@ -13,7 +13,7 @@ from conan.tools.files import (
     rmdir
 )
 from conan.tools.microsoft import (
-    MSBuild, MSBuildDeps, MSBuildToolchain, VCVars, is_msvc, vs_layout
+    MSBuild, MSBuildDeps, MSBuildToolchain, VCVars, vs_layout
 )
 from conan.tools.files import patch, save, chdir, collect_libs, copy
 
@@ -42,7 +42,7 @@ def generateVersionH(version, current_time=datetime.now()):
 
 class TCMallocConan(ConanFile):
     name = "tcmalloc"
-    version = "2.16.0.0"
+    version = "2.17.0-rc1+0"
     license = "BSD 3-Clause"
     description = "Thread-Cached Malloc"
     url = "https://github.com/odant/conan-tcmalloc"
@@ -93,7 +93,7 @@ class TCMallocConan(ConanFile):
     def package(self):
         lib = os.path.join(self.package_folder, "lib")
         bin = os.path.join(self.package_folder, "bin")
-        if  is_msvc(self):
+        if self.settings.os == "Windows":
             copy(self, "tcmalloc*.lib", dst = lib, src = self.build_folder, keep_path = False)
             copy(self, "tcmalloc*.dll", dst = bin, src = self.build_folder, keep_path = False)
             copy(self, "tcmalloc*.pdb", dst = bin, src = self.build_folder, keep_path = False)
