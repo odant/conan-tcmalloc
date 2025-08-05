@@ -78,6 +78,7 @@
 #endif
 
 #include <algorithm>
+#include <array>
 #include <functional>
 #include <mutex>
 #include <new>
@@ -992,6 +993,16 @@ TEST(TCMallocTest, ReleaseToSystem) {
 
   if(!TestingPortal::Get()->HaveSystemRelease()) return;
 
+  tcmalloc::Cleanup restore_release_rate = ([] () {
+    auto ex = MallocExtension::instance();
+    double old = ex->GetMemoryReleaseRate();
+    ex->SetMemoryReleaseRate(0); // disable implicit release to OS
+    CHECK(ex->GetMemoryReleaseRate() == 0);
+    return tcmalloc::Cleanup{[ex, old] () {
+      ex->SetMemoryReleaseRate(old);
+    }};
+  })();
+
   tcmalloc::Cleanup release_rate_cleanup = SetFlag(&TestingPortal::Get()->GetReleaseRate(), 0);
   tcmalloc::Cleanup decommit_cleanup = kAggressiveDecommit.Override(0);
 
@@ -1040,6 +1051,37 @@ TEST(TCMallocTest, ReleaseToSystem) {
   // Releasing less than a page should still trigger a release.
   MallocExtension::instance()->ReleaseToSystem(1);
   EXPECT_EQ(starting_bytes + 2*MB, GetUnmappedBytes());
+
+  constexpr size_t kNumPtrs = 10;
+  constexpr size_t kBigAllocBytes = MB * 3;
+
+  std::array<void*, kNumPtrs> used_ptrs;
+  std::array<void*, kNumPtrs> free_ptrs;
+
+  for (size_t i = 0; i < kNumPtrs; ++i) {
+    // interleave used_ptrs and free_ptrs to prevent free_ptrs from coalescing
+    used_ptrs[i] = noopt(malloc(kBigAllocBytes));
+    free_ptrs[i] = noopt(malloc(kBigAllocBytes));
+  }
+
+  starting_bytes = GetUnmappedBytes();
+
+  for (auto ptr : free_ptrs) {
+    free(ptr);
+  }
+  EXPECT_EQ(starting_bytes, GetUnmappedBytes());
+
+  for (size_t i = 0; i < 2 * kNumPtrs; ++i) {
+    MallocExtension::instance()->ReleaseToSystem(kBigAllocBytes);
+    a = noopt(malloc(kBigAllocBytes));
+    free(a);
+  }
+  MallocExtension::instance()->ReleaseToSystem(kBigAllocBytes);
+  EXPECT_EQ(starting_bytes + kNumPtrs * kBigAllocBytes, GetUnmappedBytes());
+
+  for (auto ptr : used_ptrs) {
+    free(ptr);
+  }
 }
 
 TEST(TCMallocTest, AggressiveDecommit) {
